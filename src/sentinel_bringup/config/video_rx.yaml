@@ -1,0 +1,5 @@
+video_rx_node:
+  ros__parameters:
+    video_path: "/data/videos/2018-03-05/09/2018-03-05.09-49-37.09-50-00.school.G474.r13.avi"
+    publish_topic: "/video/raw"
+    fps: 10.0
