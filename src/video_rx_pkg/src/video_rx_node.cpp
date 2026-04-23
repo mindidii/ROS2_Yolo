@@ -1,143 +1,275 @@
-#include <chrono> // 타이머 주기 설정을 위해
-#include <cstdint> // 고정 크기 정수 타입
-#include <memory>  // shared_ptr 같은 스마트 포인터 사용 (메모리 자동 관리)
-#include <stdexcept>
+#include "cam_header.h"
+#include "frame_assembler.h"
+#include "udp_receiver.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
+#include <utility>
+#include <vector>
 
+#include <boost/asio.hpp>
+#include "cv_bridge/cv_bridge.hpp"
+#include "opencv2/opencv.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/header.hpp"
 #include "sensor_msgs/msg/image.hpp"
-#include "cv_bridge/cv_bridge.hpp" // OpenCV와 ROS 메시지 간 변환을 위해
-#include "opencv2/opencv.hpp" // OpenCV 라이브러리
-
-#include "sentinel_interfaces/msg/frame_info.hpp" // 사용자 정의 메시지 타입 
+#include "sentinel_interfaces/msg/frame_info.hpp"
 #include "sentinel_interfaces/msg/video_rx_status.hpp"
+#include "std_msgs/msg/header.hpp"
 
-class VideoRxNode : public rclcpp::Node // 로스 노드 클래스 정의
+// 완성된 프레임을 받아서, JPEG 바이트를 이미지로 decode
+class VideoRxNode : public rclcpp::Node
 {
 public:
     VideoRxNode()
-    : Node("video_rx_node"), // 노드 이름을 "video_rx_node"로 설정
-      fps_(10.0),            // 멤버 변수 초기화
-      frame_count_(0) 
+    : Node("video_rx_node")
     {
-        // ROS2 파라미터 선언 및 초기화
-        // 노드의 설정을 외부에서 바꿀 수 있도록 함
-        this->declare_parameter<std::string>("video_path", "");
-        this->declare_parameter<std::string>("publish_topic", "/video/raw");
-        this->declare_parameter<double>("fps", 10.0);
-        
-        // 파라미터 값을 읽어와 멤버 변수에 저장
-        video_path_ = this->get_parameter("video_path").as_string();
-        publish_topic_ = this->get_parameter("publish_topic").as_string();
-        fps_ = this->get_parameter("fps").as_double();
+        declare_parameter<int>("ir_udp_port", 5001);
+        declare_parameter<int>("eo_udp_port", 5000);
+        declare_parameter<int>("ir_camera_id", static_cast<int>(CAM_ID_IR));
+        declare_parameter<int>("eo_camera_id", static_cast<int>(CAM_ID_EO));
+        declare_parameter<std::string>("ir_publish_topic", "/camera/ir");
+        declare_parameter<std::string>("ir_frame_info_topic", "/camera/ir/frame_info");
+        declare_parameter<std::string>("ir_status_topic", "/camera/ir/rx_status");
+        declare_parameter<std::string>("ir_source_name", "jetson_udp_ir");
+        declare_parameter<std::string>("ir_frame_id", "camera_ir");
+        declare_parameter<double>("ir_fps", 10.0);
+        declare_parameter<std::string>("eo_publish_topic", "/camera/eo");
+        declare_parameter<std::string>("eo_frame_info_topic", "/camera/eo/frame_info");
+        declare_parameter<std::string>("eo_status_topic", "/camera/eo/rx_status");
+        declare_parameter<std::string>("eo_source_name", "jetson_udp_eo");
+        declare_parameter<std::string>("eo_frame_id", "camera_eo");
+        declare_parameter<double>("eo_fps", 10.0);
+        declare_parameter<int>("stale_ms", 2000);
 
-        // 비디오 경로가 비어있는지 확인
-        if (video_path_.empty()) {
-            RCLCPP_ERROR(this->get_logger(), "Parameter 'video_path' is empty.");
-            throw std::runtime_error("video_path is empty");
+        ir_pipeline_.udp_port = static_cast<uint16_t>(get_parameter("ir_udp_port").as_int());
+        ir_pipeline_.camera_id = static_cast<uint8_t>(get_parameter("ir_camera_id").as_int());
+        ir_pipeline_.publish_topic = get_parameter("ir_publish_topic").as_string();
+        ir_pipeline_.frame_info_topic = get_parameter("ir_frame_info_topic").as_string();
+        ir_pipeline_.status_topic = get_parameter("ir_status_topic").as_string();
+        ir_pipeline_.source_name = get_parameter("ir_source_name").as_string();
+        ir_pipeline_.ros_frame_id = get_parameter("ir_frame_id").as_string();
+        ir_pipeline_.expected_fps = get_parameter("ir_fps").as_double();
+
+        eo_pipeline_.udp_port = static_cast<uint16_t>(get_parameter("eo_udp_port").as_int());
+        eo_pipeline_.camera_id = static_cast<uint8_t>(get_parameter("eo_camera_id").as_int());
+        eo_pipeline_.publish_topic = get_parameter("eo_publish_topic").as_string();
+        eo_pipeline_.frame_info_topic = get_parameter("eo_frame_info_topic").as_string();
+        eo_pipeline_.status_topic = get_parameter("eo_status_topic").as_string();
+        eo_pipeline_.source_name = get_parameter("eo_source_name").as_string();
+        eo_pipeline_.ros_frame_id = get_parameter("eo_frame_id").as_string();
+        eo_pipeline_.expected_fps = get_parameter("eo_fps").as_double();
+
+        stale_ms_ = static_cast<uint32_t>(std::max<int64_t>(100, get_parameter("stale_ms").as_int()));
+       
+        // 파라미터 값을 각 CameraPipeline 구조체에 채워넣고, FrameAssembler 객체를 만들 때 자신을 콜백으로 넘겨줌
+        assembler_ = std::make_unique<FrameAssembler>(
+            [this](AssembledFrame frame) { this->handle_frame(std::move(frame)); },
+            stale_ms_);
+
+        initialize_pipeline(ir_pipeline_);
+        initialize_pipeline(eo_pipeline_);
+
+        io_work_ = std::make_unique<IoWorkGuard>(boost::asio::make_work_guard(io_context_));
+
+        ir_receiver_ = std::make_unique<UdpReceiver>(io_context_, ir_pipeline_.udp_port, *assembler_);
+        eo_receiver_ = std::make_unique<UdpReceiver>(io_context_, eo_pipeline_.udp_port, *assembler_);
+        ir_receiver_->start();
+        eo_receiver_->start();
+        io_thread_ = std::thread([this]() { io_context_.run(); });
+
+        ir_pipeline_.last_fps_time = now();
+        eo_pipeline_.last_fps_time = now();
+        status_timer_ = create_wall_timer(
+            std::chrono::seconds(1),
+            std::bind(&VideoRxNode::on_status_timer, this));
+
+        RCLCPP_INFO(get_logger(), "VideoRxNode started");
+        log_pipeline("IR", ir_pipeline_);
+        log_pipeline("EO", eo_pipeline_);
+    }
+
+    ~VideoRxNode() override
+    {
+        if (ir_receiver_) {
+            ir_receiver_->stop();
         }
-        // fps 값이 유효한지 확인
-        if (fps_ <= 0.0) {
-            // 에러 로그를 출력하고 기본값으로 설정
-            RCLCPP_WARN(this->get_logger(), "Invalid fps: %.2f. Fallback to 10.0", fps_);
-            fps_ = 10.0;
+        if (eo_receiver_) {
+            eo_receiver_->stop();
         }
-        // 영상 파일이 정상적으로 열렸는지 확인 
-        cap_.open(video_path_);
-        if (!cap_.isOpened()) {
-            RCLCPP_ERROR(this->get_logger(), "Failed to open video: %s", video_path_.c_str());
-            throw std::runtime_error("Failed to open video");
+        io_work_.reset();
+        io_context_.stop();
+        if (io_thread_.joinable()) {
+            io_thread_.join();
         }
-
-        // 토픽에 메시지를 보내기 위한 퍼블리셔(발행키) 생성
-        image_pub_ = this->create_publisher<sensor_msgs::msg::Image>(publish_topic_, 10);
-        frame_info_pub_ =
-            this->create_publisher<sentinel_interfaces::msg::FrameInfo>("/video/frame_info", 10);
-        status_pub_ =
-            this->create_publisher<sentinel_interfaces::msg::VideoRxStatus>("/video/rx_status", 10);
-
-        // 프레임 발행 주기을 초 단위 시간으로 계산 
-        auto period = std::chrono::duration<double>(1.0 / fps_);
-        // 계산한 시간을 ms로 변환 
-        auto period_ms = std::chrono::duration_cast<std::chrono::milliseconds>(period);
-
-        // period_ms가 0 이하인 경우 기본값으로 설정
-        if (period_ms.count() <= 0) {
-            period_ms = std::chrono::milliseconds(100);
-        }
-
-        // 정해진 주기마다 timer_callback 함수를 호출하는 타이머 생성
-        timer_ = this->create_wall_timer(
-            period_ms,
-            std::bind(&VideoRxNode::timer_callback, this));
-
-        // 어떤 노드가 어떤 설정으로 시작했는지 로그로 출력
-        RCLCPP_INFO(this->get_logger(), "VideoRxNode started.");
-        RCLCPP_INFO(this->get_logger(), "Video path: %s", video_path_.c_str());
-        RCLCPP_INFO(this->get_logger(), "Publish topic: %s", publish_topic_.c_str());
-        RCLCPP_INFO(this->get_logger(), "FPS: %.2f", fps_);
     }
 
 private:
-    // 노드 상태를 다른 노드에세 알려주는 함수 
-    // /video/rx_status 토픽을 담당 
-    void publish_status(bool is_ok, const std::string & message)
+    // 카메라 1개(IR 또는 EO)에 필요한 상태를 한 번에 묶은 자료구조
+    struct CameraPipeline
     {
-        sentinel_interfaces::msg::VideoRxStatus status_msg;
-        status_msg.stamp = this->now();
-        status_msg.is_ok = is_ok;
-        status_msg.message = message;
-        status_msg.video_path = video_path_;
-        status_msg.published_frames = frame_count_;
-        status_pub_->publish(status_msg);
-    }
+        uint16_t udp_port{};
+        uint8_t camera_id{};
+        std::string publish_topic;
+        std::string frame_info_topic;
+        std::string status_topic;
+        std::string source_name;
+        std::string ros_frame_id;
+        double expected_fps{0.0};
+        std::atomic<uint32_t> published_frames{0};
+        std::atomic<double> current_fps{0.0};
+        uint32_t fps_counter{0};
+        rclcpp::Time last_fps_time{0, 0, RCL_SYSTEM_TIME};
+        rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
+        rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr frame_info_pub;
+        rclcpp::Publisher<sentinel_interfaces::msg::VideoRxStatus>::SharedPtr status_pub;
+    };
 
-    // 타이머가 호출하는 콜백 함수
-    void timer_callback()
+    void handle_frame(AssembledFrame frame)
     {
-        cv::Mat frame;
-        if (!cap_.read(frame)) {
-            publish_status(false, "End of video reached");
-            RCLCPP_INFO(this->get_logger(), "End of video reached.");
-            rclcpp::shutdown();
+        // 카메라 분기 
+        CameraPipeline * pipeline = get_pipeline(frame.camera_id);
+        if (pipeline == nullptr) {
             return;
         }
 
-        const auto now = this->now();
+        const size_t expected_yuyv_bytes =
+            static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 2U;
+        if (frame.width == 0 || frame.height == 0 || frame.data.size() != expected_yuyv_bytes) {
+            publish_status(
+                *pipeline,
+                false,
+                "Invalid YUYV frame size: expected=" + std::to_string(expected_yuyv_bytes) +
+                    " actual=" + std::to_string(frame.data.size()));
+            return;
+        }
+
+        cv::Mat yuyv(
+            static_cast<int>(frame.height),
+            static_cast<int>(frame.width),
+            CV_8UC2,
+            frame.data.data());
+        cv::Mat image;
+        cv::cvtColor(yuyv, image, cv::COLOR_YUV2BGR_YUYV);
+        if (image.empty()) {
+            publish_status(*pipeline, false, "Failed to convert assembled YUYV frame");
+            return;
+        }
+
+        const int64_t stamp_ns = static_cast<int64_t>(frame.timestamp_ms) * 1000000LL;
+        const rclcpp::Time stamp(stamp_ns, RCL_SYSTEM_TIME);
 
         std_msgs::msg::Header header;
-        header.stamp = now;
-        header.frame_id = "camera_frame";
+        header.stamp = stamp;
+        header.frame_id = pipeline->ros_frame_id;
 
-        auto image_msg = cv_bridge::CvImage(header, "bgr8", frame).toImageMsg();
-        image_pub_->publish(*image_msg);
+        auto image_msg = cv_bridge::CvImage(header, "bgr8", image).toImageMsg();
+        pipeline->image_pub->publish(*image_msg);
 
         sentinel_interfaces::msg::FrameInfo frame_info_msg;
-        frame_info_msg.stamp = now;
-        frame_info_msg.frame_id = frame_count_;
-        frame_info_msg.width = static_cast<uint32_t>(frame.cols);
-        frame_info_msg.height = static_cast<uint32_t>(frame.rows);
-        frame_info_msg.fps = static_cast<float>(fps_);
-        frame_info_msg.source = video_path_;
-        frame_info_pub_->publish(frame_info_msg);
+        frame_info_msg.stamp = stamp;
+        frame_info_msg.frame_id = frame.frame_id;
+        frame_info_msg.width = frame.width;
+        frame_info_msg.height = frame.height;
+        frame_info_msg.fps = static_cast<float>(
+            pipeline->current_fps.load() > 0.0 ? pipeline->current_fps.load() : pipeline->expected_fps);
+        frame_info_msg.source = pipeline->source_name;
+        pipeline->frame_info_pub->publish(frame_info_msg);
 
-        publish_status(true, "Frame published successfully");
-
-        frame_count_++;
+        pipeline->published_frames.fetch_add(1);
+        update_fps(*pipeline);
+        publish_status(
+            *pipeline,
+            true,
+            "Frame published: " + std::to_string(frame.width) + "x" +
+                std::to_string(frame.height) + " bytes=" + std::to_string(frame.data.size()));
     }
 
-    // 멤버 변수 선언
-    std::string video_path_;
-    std::string publish_topic_;
-    double fps_;
-    uint32_t frame_count_;
+    void update_fps(CameraPipeline & pipeline)
+    {
+        pipeline.fps_counter++;
+        const auto now_time = now();
+        const double elapsed = (now_time - pipeline.last_fps_time).seconds();
+        if (elapsed >= 1.0) {
+            pipeline.current_fps.store(static_cast<double>(pipeline.fps_counter) / elapsed);
+            pipeline.fps_counter = 0;
+            pipeline.last_fps_time = now_time;
+        }
+    }
 
-    cv::VideoCapture cap_;
-    rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
-    rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr frame_info_pub_;
-    rclcpp::Publisher<sentinel_interfaces::msg::VideoRxStatus>::SharedPtr status_pub_;
-    rclcpp::TimerBase::SharedPtr timer_;
+    void on_status_timer()
+    {
+        assembler_->purge_stale();
+        const auto stats = assembler_->stats();
+        const std::string shared_message =
+            "Receiver running | packets=" + std::to_string(stats.packets_received) +
+            " frames=" + std::to_string(stats.frames_completed) +
+            " dropped=" + std::to_string(stats.frames_dropped);
+        publish_status(ir_pipeline_, true, shared_message);
+        publish_status(eo_pipeline_, true, shared_message);
+    }
+
+    void publish_status(CameraPipeline & pipeline, bool is_ok, const std::string & message)
+    {
+        sentinel_interfaces::msg::VideoRxStatus status_msg;
+        status_msg.stamp = now();
+        status_msg.is_ok = is_ok;
+        status_msg.message = message;
+        status_msg.video_path = pipeline.source_name;
+        status_msg.published_frames = pipeline.published_frames.load();
+        pipeline.status_pub->publish(status_msg);
+    }
+
+    void initialize_pipeline(CameraPipeline & pipeline)
+    {
+        pipeline.image_pub = create_publisher<sensor_msgs::msg::Image>(pipeline.publish_topic, 10);
+        pipeline.frame_info_pub =
+            create_publisher<sentinel_interfaces::msg::FrameInfo>(pipeline.frame_info_topic, 10);
+        pipeline.status_pub =
+            create_publisher<sentinel_interfaces::msg::VideoRxStatus>(pipeline.status_topic, 10);
+    }
+
+    CameraPipeline * get_pipeline(uint8_t camera_id)
+    {
+        if (camera_id == ir_pipeline_.camera_id) {
+            return &ir_pipeline_;
+        }
+        if (camera_id == eo_pipeline_.camera_id) {
+            return &eo_pipeline_;
+        }
+        RCLCPP_WARN_THROTTLE(
+            get_logger(),
+            *get_clock(),
+            5000,
+            "Received frame for unknown camera_id=0x%02X",
+            camera_id);
+        return nullptr;
+    }
+
+    void log_pipeline(const char * label, const CameraPipeline & pipeline)
+    {
+        RCLCPP_INFO(get_logger(), "%s UDP port      : %u", label, pipeline.udp_port);
+        RCLCPP_INFO(get_logger(), "%s camera id     : 0x%02X", label, pipeline.camera_id);
+        RCLCPP_INFO(get_logger(), "%s image topic   : %s", label, pipeline.publish_topic.c_str());
+        RCLCPP_INFO(get_logger(), "%s info topic    : %s", label, pipeline.frame_info_topic.c_str());
+        RCLCPP_INFO(get_logger(), "%s status topic  : %s", label, pipeline.status_topic.c_str());
+    }
+
+    std::unique_ptr<FrameAssembler> assembler_;
+    std::unique_ptr<UdpReceiver> ir_receiver_;
+    std::unique_ptr<UdpReceiver> eo_receiver_;
+    using IoWorkGuard = boost::asio::executor_work_guard<boost::asio::io_context::executor_type>;
+    boost::asio::io_context io_context_;
+    std::unique_ptr<IoWorkGuard> io_work_;
+    std::thread io_thread_;
+    CameraPipeline ir_pipeline_;
+    CameraPipeline eo_pipeline_;
+    uint32_t stale_ms_;
+    rclcpp::TimerBase::SharedPtr status_timer_;
 };
 
 int main(int argc, char * argv[])

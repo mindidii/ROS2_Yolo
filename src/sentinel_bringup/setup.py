@@ -15,7 +15,9 @@ setup(
         ]),
         ('share/' + package_name + '/config', [
             'config/video_rx.yaml',
-            'config/yolo_detector.yaml',
+            'config/image_preprocess.yaml',
+            'config/yolo_detector_ir.yaml',
+            'config/yolo_detector_eo.yaml',
         ]),
     ],
     install_requires=['setuptools'],

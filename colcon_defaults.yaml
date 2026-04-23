@@ -1,0 +1,6 @@
+build:
+  cmake-args:
+    - -DPython3_EXECUTABLE=/usr/bin/python3.12
+    - -DPython3_INCLUDE_DIR=/usr/include/python3.12
+    - -DBoost_INCLUDE_DIR=/usr/include
+    - -DBoost_PYTHON312_LIBRARY=/usr/lib/aarch64-linux-gnu/libboost_python312.so

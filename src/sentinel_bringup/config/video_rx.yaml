@@ -1,5 +1,19 @@
 video_rx_node:
   ros__parameters:
-    video_path: "/data/videos/2018-03-05/09/2018-03-05.09-49-37.09-50-00.school.G474.r13.avi"
-    publish_topic: "/video/raw"
-    fps: 10.0
+    ir_udp_port: 5001
+    eo_udp_port: 5000
+    ir_camera_id: 2
+    eo_camera_id: 1
+    ir_publish_topic: "/camera/ir"
+    ir_frame_info_topic: "/camera/ir/frame_info"
+    ir_status_topic: "/camera/ir/rx_status"
+    ir_source_name: "jetson_udp_ir"
+    ir_frame_id: "camera_ir"
+    ir_fps: 10.0
+    eo_publish_topic: "/camera/eo"
+    eo_frame_info_topic: "/camera/eo/frame_info"
+    eo_status_topic: "/camera/eo/rx_status"
+    eo_source_name: "jetson_udp_eo"
+    eo_frame_id: "camera_eo"
+    eo_fps: 10.0
+    stale_ms: 2000

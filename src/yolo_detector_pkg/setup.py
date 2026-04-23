@@ -8,6 +8,7 @@ setup(
     version='0.0.0',
     packages=[package_name],
     scripts=[
+        'scripts/bbox_overlay_node',
         'scripts/object_detector_node',
         'scripts/yolo_detector_node',
     ],

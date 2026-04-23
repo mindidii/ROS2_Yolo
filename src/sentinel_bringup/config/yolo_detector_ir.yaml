@@ -1,0 +1,20 @@
+yolo_detector_ir_node:
+  ros__parameters:
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/last.onnx"
+    image_topic: "/video/ir/preprocessed"
+    frame_info_topic: "/video/ir/preprocessed/frame_info"
+    conf_threshold: 0.25
+    input_width: 640
+    input_height: 640
+    enabled: true
+    inference_period_sec: 0.05
+    synced_image_topic: "/yolo/ir/image_raw"
+    sync_queue_size: 30
+    detection_topic: "/detections/ir"
+    driver_detection_topic: "/driver/ir/detection"
+    driver_frame_size_topic: "/driver/ir/frame_size"
+    track_max_missed_frames: 10
+    track_max_center_distance_px: 200.0
+    status_topic: "/yolo/ir/status"
+    enable_service: "/yolo/ir/enable"
+    threshold_service: "/yolo/ir/set_threshold"

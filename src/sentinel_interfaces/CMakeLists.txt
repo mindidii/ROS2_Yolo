@@ -7,9 +7,11 @@ find_package(builtin_interfaces REQUIRED)
 find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Detection.msg"
   "msg/Detection2D.msg"
   "msg/Detection2DArray.msg"
   "msg/FrameInfo.msg"
+  "msg/FrameSize.msg"
   "msg/VideoRxStatus.msg"
   "msg/YoloStatus.msg"
   "srv/SetBoolFlag.srv"

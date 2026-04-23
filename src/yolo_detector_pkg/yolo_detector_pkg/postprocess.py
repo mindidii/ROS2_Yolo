@@ -1,13 +1,13 @@
 import numpy as np
 
-
+# 전체 후처리의 시작점 
 def decode_yolo_output(outputs, conf_threshold, scale_x, scale_y, num_classes, iou_threshold=0.45):
     pred = _reshape_predictions(outputs[0])
     if pred is None:
         return []
 
     detections = []
-
+    # 각 row를 하나씩 해석 
     for row in pred:
         decoded = _decode_row(row, conf_threshold, num_classes)
         if decoded is None:
