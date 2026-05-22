@@ -18,7 +18,6 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sentinel_interfaces/msg/frame_info.hpp"
-#include "sentinel_interfaces/msg/video_rx_status.hpp"
 #include "std_msgs/msg/header.hpp"
 
 // 완성된 프레임을 받아서, JPEG 바이트를 이미지로 decode
@@ -34,35 +33,39 @@ public:
         declare_parameter<int>("eo_camera_id", static_cast<int>(CAM_ID_EO));
         declare_parameter<std::string>("ir_publish_topic", "/camera/ir");
         declare_parameter<std::string>("ir_frame_info_topic", "/camera/ir/frame_info");
-        declare_parameter<std::string>("ir_status_topic", "/camera/ir/rx_status");
         declare_parameter<std::string>("ir_source_name", "jetson_udp_ir");
         declare_parameter<std::string>("ir_frame_id", "camera_ir");
         declare_parameter<double>("ir_fps", 10.0);
+        declare_parameter<int>("ir_width", 640);
+        declare_parameter<int>("ir_height", 480);
         declare_parameter<std::string>("eo_publish_topic", "/camera/eo");
         declare_parameter<std::string>("eo_frame_info_topic", "/camera/eo/frame_info");
-        declare_parameter<std::string>("eo_status_topic", "/camera/eo/rx_status");
         declare_parameter<std::string>("eo_source_name", "jetson_udp_eo");
         declare_parameter<std::string>("eo_frame_id", "camera_eo");
         declare_parameter<double>("eo_fps", 10.0);
+        declare_parameter<int>("eo_width", 1280);
+        declare_parameter<int>("eo_height", 720);
         declare_parameter<int>("stale_ms", 2000);
 
         ir_pipeline_.udp_port = static_cast<uint16_t>(get_parameter("ir_udp_port").as_int());
         ir_pipeline_.camera_id = static_cast<uint8_t>(get_parameter("ir_camera_id").as_int());
         ir_pipeline_.publish_topic = get_parameter("ir_publish_topic").as_string();
         ir_pipeline_.frame_info_topic = get_parameter("ir_frame_info_topic").as_string();
-        ir_pipeline_.status_topic = get_parameter("ir_status_topic").as_string();
         ir_pipeline_.source_name = get_parameter("ir_source_name").as_string();
         ir_pipeline_.ros_frame_id = get_parameter("ir_frame_id").as_string();
         ir_pipeline_.expected_fps = get_parameter("ir_fps").as_double();
+        ir_pipeline_.frame_width = static_cast<uint16_t>(get_parameter("ir_width").as_int());
+        ir_pipeline_.frame_height = static_cast<uint16_t>(get_parameter("ir_height").as_int());
 
         eo_pipeline_.udp_port = static_cast<uint16_t>(get_parameter("eo_udp_port").as_int());
         eo_pipeline_.camera_id = static_cast<uint8_t>(get_parameter("eo_camera_id").as_int());
         eo_pipeline_.publish_topic = get_parameter("eo_publish_topic").as_string();
         eo_pipeline_.frame_info_topic = get_parameter("eo_frame_info_topic").as_string();
-        eo_pipeline_.status_topic = get_parameter("eo_status_topic").as_string();
         eo_pipeline_.source_name = get_parameter("eo_source_name").as_string();
         eo_pipeline_.ros_frame_id = get_parameter("eo_frame_id").as_string();
         eo_pipeline_.expected_fps = get_parameter("eo_fps").as_double();
+        eo_pipeline_.frame_width = static_cast<uint16_t>(get_parameter("eo_width").as_int());
+        eo_pipeline_.frame_height = static_cast<uint16_t>(get_parameter("eo_height").as_int());
 
         stale_ms_ = static_cast<uint32_t>(std::max<int64_t>(100, get_parameter("stale_ms").as_int()));
        
@@ -76,8 +79,20 @@ public:
 
         io_work_ = std::make_unique<IoWorkGuard>(boost::asio::make_work_guard(io_context_));
 
-        ir_receiver_ = std::make_unique<UdpReceiver>(io_context_, ir_pipeline_.udp_port, *assembler_);
-        eo_receiver_ = std::make_unique<UdpReceiver>(io_context_, eo_pipeline_.udp_port, *assembler_);
+        ir_receiver_ = std::make_unique<UdpReceiver>(
+            io_context_,
+            ir_pipeline_.udp_port,
+            ir_pipeline_.camera_id,
+            ir_pipeline_.frame_width,
+            ir_pipeline_.frame_height,
+            *assembler_);
+        eo_receiver_ = std::make_unique<UdpReceiver>(
+            io_context_,
+            eo_pipeline_.udp_port,
+            eo_pipeline_.camera_id,
+            eo_pipeline_.frame_width,
+            eo_pipeline_.frame_height,
+            *assembler_);
         ir_receiver_->start();
         eo_receiver_->start();
         io_thread_ = std::thread([this]() { io_context_.run(); });
@@ -116,17 +131,17 @@ private:
         uint8_t camera_id{};
         std::string publish_topic;
         std::string frame_info_topic;
-        std::string status_topic;
         std::string source_name;
         std::string ros_frame_id;
         double expected_fps{0.0};
+        uint16_t frame_width{0};
+        uint16_t frame_height{0};
         std::atomic<uint32_t> published_frames{0};
         std::atomic<double> current_fps{0.0};
         uint32_t fps_counter{0};
         rclcpp::Time last_fps_time{0, 0, RCL_SYSTEM_TIME};
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
         rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr frame_info_pub;
-        rclcpp::Publisher<sentinel_interfaces::msg::VideoRxStatus>::SharedPtr status_pub;
     };
 
     void handle_frame(AssembledFrame frame)
@@ -140,11 +155,11 @@ private:
         const size_t expected_yuyv_bytes =
             static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 2U;
         if (frame.width == 0 || frame.height == 0 || frame.data.size() != expected_yuyv_bytes) {
-            publish_status(
-                *pipeline,
-                false,
-                "Invalid YUYV frame size: expected=" + std::to_string(expected_yuyv_bytes) +
-                    " actual=" + std::to_string(frame.data.size()));
+            RCLCPP_WARN(
+                get_logger(),
+                "Invalid YUYV frame size: expected=%zu actual=%zu",
+                expected_yuyv_bytes,
+                frame.data.size());
             return;
         }
 
@@ -156,7 +171,7 @@ private:
         cv::Mat image;
         cv::cvtColor(yuyv, image, cv::COLOR_YUV2BGR_YUYV);
         if (image.empty()) {
-            publish_status(*pipeline, false, "Failed to convert assembled YUYV frame");
+            RCLCPP_WARN(get_logger(), "Failed to convert assembled YUYV frame");
             return;
         }
 
@@ -182,11 +197,6 @@ private:
 
         pipeline->published_frames.fetch_add(1);
         update_fps(*pipeline);
-        publish_status(
-            *pipeline,
-            true,
-            "Frame published: " + std::to_string(frame.width) + "x" +
-                std::to_string(frame.height) + " bytes=" + std::to_string(frame.data.size()));
     }
 
     void update_fps(CameraPipeline & pipeline)
@@ -205,23 +215,14 @@ private:
     {
         assembler_->purge_stale();
         const auto stats = assembler_->stats();
-        const std::string shared_message =
-            "Receiver running | packets=" + std::to_string(stats.packets_received) +
-            " frames=" + std::to_string(stats.frames_completed) +
-            " dropped=" + std::to_string(stats.frames_dropped);
-        publish_status(ir_pipeline_, true, shared_message);
-        publish_status(eo_pipeline_, true, shared_message);
-    }
-
-    void publish_status(CameraPipeline & pipeline, bool is_ok, const std::string & message)
-    {
-        sentinel_interfaces::msg::VideoRxStatus status_msg;
-        status_msg.stamp = now();
-        status_msg.is_ok = is_ok;
-        status_msg.message = message;
-        status_msg.video_path = pipeline.source_name;
-        status_msg.published_frames = pipeline.published_frames.load();
-        pipeline.status_pub->publish(status_msg);
+        RCLCPP_INFO_THROTTLE(
+            get_logger(),
+            *get_clock(),
+            5000,
+            "Receiver running | packets=%zu frames=%zu dropped=%zu",
+            stats.packets_received,
+            stats.frames_completed,
+            stats.frames_dropped);
     }
 
     void initialize_pipeline(CameraPipeline & pipeline)
@@ -229,8 +230,6 @@ private:
         pipeline.image_pub = create_publisher<sensor_msgs::msg::Image>(pipeline.publish_topic, 10);
         pipeline.frame_info_pub =
             create_publisher<sentinel_interfaces::msg::FrameInfo>(pipeline.frame_info_topic, 10);
-        pipeline.status_pub =
-            create_publisher<sentinel_interfaces::msg::VideoRxStatus>(pipeline.status_topic, 10);
     }
 
     CameraPipeline * get_pipeline(uint8_t camera_id)
@@ -256,7 +255,6 @@ private:
         RCLCPP_INFO(get_logger(), "%s camera id     : 0x%02X", label, pipeline.camera_id);
         RCLCPP_INFO(get_logger(), "%s image topic   : %s", label, pipeline.publish_topic.c_str());
         RCLCPP_INFO(get_logger(), "%s info topic    : %s", label, pipeline.frame_info_topic.c_str());
-        RCLCPP_INFO(get_logger(), "%s status topic  : %s", label, pipeline.status_topic.c_str());
     }
 
     std::unique_ptr<FrameAssembler> assembler_;

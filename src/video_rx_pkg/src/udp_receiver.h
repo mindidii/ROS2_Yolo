@@ -15,6 +15,9 @@ class UdpReceiver {
 public:
     UdpReceiver(boost::asio::io_context& ioc,
                 uint16_t                 port,
+                uint8_t                  camera_id,
+                uint16_t                 frame_width,
+                uint16_t                 frame_height,
                 FrameAssembler&          assembler);
 
     void start();
@@ -27,6 +30,9 @@ private:
     boost::asio::ip::udp::endpoint remote_;
     FrameAssembler&                assembler_;
     uint16_t port_;
+    uint8_t camera_id_;
+    uint16_t frame_width_;
+    uint16_t frame_height_;
     
     // 최대 패킷 크기: 헤더 26 + payload 1400 + 여유 64
     static constexpr size_t BUF_SIZE = HEADER_SIZE + MAX_PAYLOAD + 64;

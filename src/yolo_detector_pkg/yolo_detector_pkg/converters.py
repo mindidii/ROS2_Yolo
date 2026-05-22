@@ -15,6 +15,7 @@ def to_detection_array_msg(image_msg, frame_info_msg, detections):
     # det -> Detection2D 
     for det in detections:
         detection_msg = Detection2D()
+        detection_msg.class_id = int(det.class_id)
         detection_msg.class_name = str(det.class_name)
         detection_msg.score = float(det.score)
         detection_msg.x1 = float(det.x1)

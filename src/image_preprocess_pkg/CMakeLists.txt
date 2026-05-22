@@ -32,4 +32,10 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  scripts/capture_eo_calibration_images.py
+  scripts/calibrate_eo_camera.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()

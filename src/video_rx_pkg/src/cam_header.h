@@ -7,8 +7,8 @@
 static constexpr uint16_t MAX_PAYLOAD  = 1400;
 static constexpr uint16_t HEADER_SIZE  = 20;
 
-static constexpr uint8_t  CAM_ID_EO    = 0x01;
-static constexpr uint8_t  CAM_ID_PCAM  = CAM_ID_EO;   // 기존 명칭 호환
+static constexpr uint8_t  CAM_ID_PCAM  = 0x01;   // 추후 camera_id 구분용
+static constexpr uint8_t  CAM_ID_EO    = CAM_ID_PCAM;
 static constexpr uint8_t  CAM_ID_IR    = 0x02;
 
 #pragma pack(push, 1)

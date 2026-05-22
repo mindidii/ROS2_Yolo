@@ -1,0 +1,20 @@
+image_preprocess_node:
+  ros__parameters:
+    eo_image_topic: /camera/eo
+    eo_frame_info_topic: /camera/eo/frame_info
+
+    eo_output_topic: /video/eo/preprocessed
+    eo_output_frame_info_topic: /video/eo/preprocessed/frame_info
+
+    sync_queue_size: 30
+    eo_width: 640
+    eo_height: 480
+    enable_calibration: true
+    calibration_width: 640
+    calibration_height: 480
+
+    camera_fx: 548.149940
+    camera_fy: 541.536973
+    camera_cx: 340.356753
+    camera_cy: 202.329670
+    dist_coeffs: [-0.637447, 0.357602, 0.011725, -0.010309, 0.000000]

@@ -1,13 +1,21 @@
 # YOLO Detector GUI Interface
 
-이 문서는 GUI 담당자가 `yolo_detector_node`에서 받을 수 있는 영상, 탐지 결과, 상태, 서비스 정보를 한 번에 확인하기 위한 정리 문서다.
+이 문서는 GUI 담당자가 현재 tracker 중심 구조에서 구독할 영상, 추적 결과, 상태, 서비스 정보를 한 번에 확인하기 위한 정리 문서다.
 
 현재 시스템은 IR/EO 카메라를 분리해서 YOLO 노드 2개를 실행한다.
 
 - `yolo_detector_ir_node`
 - `yolo_detector_eo_node`
 
-각 노드는 입력 영상과 `FrameInfo`의 `stamp`가 같은 프레임만 매칭해서 추론한다.
+각 YOLO 노드는 입력 영상과 `FrameInfo`의 `stamp`가 같은 프레임만 매칭해서 추론한다.
+
+현재 데이터 흐름은 아래와 같다.
+
+```text
+YOLO node -> /detections/* -> ByteTrack tracker node -> /tracks/*
+```
+
+따라서 GUI bbox overlay는 기본적으로 `/tracks/*`를 구독한다. `/detections/*`는 tracker 입력 및 디버깅용 내부 토픽으로 둔다.
 
 ## 1. GUI에서 주로 구독할 토픽
 
@@ -15,8 +23,8 @@
 
 | 용도 | 토픽 | 타입 |
 |---|---|---|
-| YOLO가 실제 처리한 영상 | `/yolo/ir/image_raw` | `sensor_msgs/msg/Image` |
-| 전체 탐지 결과 | `/detections/ir` | `sentinel_interfaces/msg/Detection2DArray` |
+| 영상 표시 | `/camera/ir` | `sensor_msgs/msg/Image` |
+| bbox + track_id 표시 | `/tracks/ir` | `sentinel_interfaces/msg/TrackedDetection2DArray` |
 | 대표 객체 1개 중심 좌표 | `/driver/ir/detection` | `sentinel_interfaces/msg/Detection` |
 | YOLO 상태 | `/yolo/ir/status` | `sentinel_interfaces/msg/YoloStatus` |
 
@@ -24,27 +32,27 @@
 
 | 용도 | 토픽 | 타입 |
 |---|---|---|
-| YOLO가 실제 처리한 영상 | `/yolo/eo/image_raw` | `sensor_msgs/msg/Image` |
-| 전체 탐지 결과 | `/detections/eo` | `sentinel_interfaces/msg/Detection2DArray` |
+| 영상 표시 | `/video/eo/preprocessed` | `sensor_msgs/msg/Image` |
+| bbox + track_id 표시 | `/tracks/eo` | `sentinel_interfaces/msg/TrackedDetection2DArray` |
 | 대표 객체 1개 중심 좌표 | `/driver/eo/detection` | `sentinel_interfaces/msg/Detection` |
 | YOLO 상태 | `/yolo/eo/status` | `sentinel_interfaces/msg/YoloStatus` |
 
-GUI에서 bbox overlay를 그릴 때는 `/yolo/*/image_raw`와 `/detections/*`를 `stamp` 기준으로 매칭하면 된다.
+GUI에서 영상과 bbox를 함께 사용할 때는 영상 `header.stamp`와 `/tracks/*`의 `stamp`를 기준으로 매칭하면 된다.
 
 ## 2. YOLO 입력 토픽
 
-YOLO 노드는 원본 카메라 토픽을 직접 보지 않고 전처리된 영상을 입력으로 사용한다.
+EO YOLO 노드는 전처리된 영상을 입력으로 사용하고, IR YOLO 노드는 현재 `/camera/ir` 영상을 직접 입력으로 사용한다.
 
 | 카메라 | 입력 영상 | 입력 프레임 정보 |
 |---|---|---|
-| IR | `/video/ir/preprocessed` | `/video/ir/preprocessed/frame_info` |
+| IR | `/camera/ir` | `/camera/ir/frame_info` |
 | EO | `/video/eo/preprocessed` | `/video/eo/preprocessed/frame_info` |
 
-현재 `image_preprocess_node`는 resize를 하지 않고, blur와 CLAHE 보정만 수행한다. 따라서 `/video/*/preprocessed`의 해상도는 원본 수신 영상 해상도와 같다.
+현재 `image_preprocess_node`는 EO 영상 보정 후 `/video/eo/preprocessed`로 재발행한다. 설정상 출력 해상도는 EO 입력 해상도와 동일하게 사용한다.
 
 YOLO 모델 입력 크기는 설정상 `640x640`이지만, publish되는 detection 좌표는 원본 이미지 픽셀 좌표계 기준이다. 예를 들어 현재 영상이 `1280x720`이면 detection 좌표도 `1280x720` 기준으로 해석한다.
 
-## 3. 전체 탐지 결과: `Detection2DArray`
+## 3. tracker 입력 탐지 결과: `Detection2DArray`
 
 토픽:
 
@@ -71,9 +79,52 @@ Detection2D[] detections
 |---|---|
 | `stamp` | 해당 detection이 대응하는 영상 프레임 timestamp |
 | `frame_id` | 영상 프레임 번호 |
-| `detections` | 한 프레임에서 탐지된 객체 배열 |
+| `detections` | tracker에 입력할 한 프레임의 YOLO 탐지 객체 배열 |
 
-GUI는 `stamp`를 기준으로 `/yolo/*/image_raw.header.stamp`와 매칭한다.
+GUI가 track_id 포함 bbox를 표시하는 경우 `/detections/*`를 직접 구독할 필요는 없다. 이 토픽은 `bytetrack_tracker_*_node`가 구독해서 `/tracks/*`를 만들기 위한 입력 토픽이다.
+
+## 3-1. GUI bbox 표시용 추적 결과: `TrackedDetection2DArray`
+
+토픽:
+
+- `/tracks/ir`
+- `/tracks/eo`
+
+타입:
+
+```text
+sentinel_interfaces/msg/TrackedDetection2DArray
+```
+
+메시지 정의:
+
+```text
+builtin_interfaces/Time stamp
+uint32 frame_id
+TrackedDetection2D[] tracks
+```
+
+개별 track:
+
+```text
+int32 track_id
+int32 class_id
+string class_name
+float32 score
+float32 x1
+float32 y1
+float32 x2
+float32 y2
+```
+
+GUI는 `tracks[]`를 순회하면서 `x1`, `y1`, `x2`, `y2`로 bbox를 그리고, `track_id`, `class_name`, `score`를 label로 표시하면 된다.
+
+주의:
+
+- tracker는 confirmed track만 publish한다.
+- 현재 tracker 설정은 `min_confirm_hits: 2`라서 객체가 탐지된 직후 1프레임 정도는 `/detections/*`에는 있어도 `/tracks/*`에는 없을 수 있다.
+- 안정적인 ID 표시가 우선이면 `/tracks/*`만 사용한다.
+- 감지 즉시 표시가 꼭 필요하면 `/tracks/*`가 비어 있을 때 `/detections/*`를 fallback으로 사용할 수 있다.
 
 ## 4. 개별 bbox: `Detection2D`
 
@@ -109,7 +160,7 @@ float32 y2
 
 주의:
 
-- `/detections/*`는 전체 YOLO 결과를 전달한다.
+- `/detections/*`는 tracker 입력용 YOLO 결과를 전달한다.
 - bbox가 영상 경계를 살짝 벗어나는 경우 음수나 영상 크기보다 큰 값이 나올 수 있다.
 - GUI overlay에서는 화면 밖 좌표를 표시 영역 안으로 clamp해서 그리는 것이 안전하다.
 
@@ -181,7 +232,7 @@ frame_w: 1280
 frame_h: 720
 ```
 
-GUI에서 모터/조준 방향을 시각화하려면 이 토픽을 사용하면 된다. bbox 전체를 그릴 때는 `/detections/*`를 사용한다.
+GUI에서 모터/조준 방향을 시각화하려면 이 토픽을 사용하면 된다. bbox 전체를 그릴 때는 `/tracks/*`를 사용한다.
 
 ## 6. YOLO 상태: `YoloStatus`
 
@@ -316,10 +367,10 @@ GUI 사용:
 
 | 파라미터 | 현재 값 |
 |---|---|
-| `model_path` | `/ros2_ws/src/yolo_detector_pkg/model/best.onnx` |
+| `model_path` | `/ros2_ws/src/yolo_detector_pkg/model/last.engine` |
 | `input_width` | `640` |
 | `input_height` | `640` |
-| `conf_threshold` | `0.25` |
+| `conf_threshold` | `0.35` |
 | `enabled` | `true` |
 | `inference_period_sec` | `0.05` |
 | `sync_queue_size` | `30` |
@@ -328,11 +379,11 @@ IR 토픽 설정:
 
 | 파라미터 | 값 |
 |---|---|
-| `image_topic` | `/video/ir/preprocessed` |
-| `frame_info_topic` | `/video/ir/preprocessed/frame_info` |
-| `synced_image_topic` | `/yolo/ir/image_raw` |
+| `image_topic` | `/camera/ir` |
+| `frame_info_topic` | `/camera/ir/frame_info` |
 | `detection_topic` | `/detections/ir` |
 | `driver_detection_topic` | `/driver/ir/detection` |
+| `driver_frame_size_topic` | `/driver/ir/frame_size` |
 | `status_topic` | `/yolo/ir/status` |
 
 EO 토픽 설정:
@@ -341,23 +392,23 @@ EO 토픽 설정:
 |---|---|
 | `image_topic` | `/video/eo/preprocessed` |
 | `frame_info_topic` | `/video/eo/preprocessed/frame_info` |
-| `synced_image_topic` | `/yolo/eo/image_raw` |
 | `detection_topic` | `/detections/eo` |
 | `driver_detection_topic` | `/driver/eo/detection` |
+| `driver_frame_size_topic` | `/driver/eo/frame_size` |
 | `status_topic` | `/yolo/eo/status` |
 
 ## 9. GUI 동기화 규칙
 
 권장 매칭 방식:
 
-1. `/yolo/ir/image_raw.header.stamp`와 `/detections/ir.stamp`가 같은 메시지를 같은 프레임으로 처리한다.
-2. `/yolo/eo/image_raw.header.stamp`와 `/detections/eo.stamp`가 같은 메시지를 같은 프레임으로 처리한다.
-3. `frame_id`는 디버깅용으로 사용하고, overlay 동기화 기준은 `stamp`를 우선한다.
+1. `/camera/ir.header.stamp`와 `/tracks/ir.stamp`가 같은 메시지를 같은 프레임으로 처리한다.
+2. `/video/eo/preprocessed.header.stamp`와 `/tracks/eo.stamp`가 같은 메시지를 같은 프레임으로 처리한다.
+3. `frame_id`는 디버깅용으로 사용하고, 동기화 기준은 `stamp`를 우선한다.
 
-탐지 결과가 없는 프레임도 `/detections/*`가 빈 배열로 publish될 수 있다.
+추적 결과가 없는 프레임도 `/tracks/*`가 빈 배열로 publish될 수 있다.
 
 ```yaml
-detections: []
+tracks: []
 ```
 
 이 경우 GUI는 bbox를 지우거나 "no detection" 상태로 표시하면 된다.
@@ -373,7 +424,7 @@ ros2 topic list | grep -E "yolo|detection"
 IR detection 확인:
 
 ```bash
-ros2 topic echo /detections/ir
+ros2 topic echo /tracks/ir
 ros2 topic echo /driver/ir/detection
 ros2 topic echo /yolo/ir/status
 ```
@@ -381,7 +432,7 @@ ros2 topic echo /yolo/ir/status
 EO detection 확인:
 
 ```bash
-ros2 topic echo /detections/eo
+ros2 topic echo /tracks/eo
 ros2 topic echo /driver/eo/detection
 ros2 topic echo /yolo/eo/status
 ```
@@ -396,20 +447,18 @@ cd /ros2_ws
 토픽 주기:
 
 ```bash
-ros2 topic hz /yolo/ir/image_raw
-ros2 topic hz /detections/ir
-ros2 topic hz /yolo/eo/image_raw
-ros2 topic hz /detections/eo
+ros2 topic hz /tracks/ir
+ros2 topic hz /tracks/eo
 ```
 
 ## 11. GUI 구현 시 주의사항
 
-- `/detections/*`는 전체 객체 배열이다.
+- `/detections/*`는 tracker 입력용 YOLO 객체 배열이다.
+- `/tracks/*`는 GUI bbox overlay용 track 배열이다.
 - `/driver/*/detection`은 대표 객체 1개 중심 좌표다.
-- bbox overlay는 `/detections/*`를 사용한다.
+- bbox overlay는 `/tracks/*`를 사용한다.
 - 조준점, crosshair, 모터 방향 표시 등은 `/driver/*/detection`을 사용한다.
-- `/detections/*`의 bbox 좌표는 화면 밖으로 약간 벗어날 수 있으므로 GUI 렌더링 시 clamp하는 것이 안전하다.
+- `/tracks/*`의 bbox 좌표는 화면 밖으로 약간 벗어날 수 있으므로 GUI 렌더링 시 clamp하는 것이 안전하다.
 - `/driver/*/detection`의 `cx`, `cy`는 현재 코드에서 clamp된 bbox 기준으로 계산된다.
 - YOLO 추론이 꺼진 상태에서는 detection publish가 멈출 수 있다.
 - 모델 로드 실패 시 `/yolo/*/status.model_loaded=false`와 `last_error`를 확인한다.
-

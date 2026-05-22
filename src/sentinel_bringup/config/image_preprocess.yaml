@@ -1,30 +1,20 @@
 image_preprocess_node:
   ros__parameters:
-    # 입력 토픽
-    ir_image_topic: /camera/ir
-    ir_frame_info_topic: /camera/ir/frame_info
     eo_image_topic: /camera/eo
     eo_frame_info_topic: /camera/eo/frame_info
 
-    # 출력 토픽
-    ir_output_topic: /video/ir/preprocessed
-    ir_output_frame_info_topic: /video/ir/preprocessed/frame_info
     eo_output_topic: /video/eo/preprocessed
     eo_output_frame_info_topic: /video/eo/preprocessed/frame_info
 
-    # 동기화 버퍼
     sync_queue_size: 30
+    eo_width: 1280
+    eo_height: 720
+    enable_calibration: true
+    calibration_width: 1280
+    calibration_height: 720
 
-    # 1단계: Median Filter
-    denoise_kernel_size: 5
-    denoise_type: "gaussian"    # "median" or "gaussian"
-    # 2단계: CLAHE
-    clahe_clip_limit: 2.0
-    clahe_tile_size: 8
-
-    # 3단계: Calibration (사용 안 하면 0.0으로 두면 자동 skip)
-    camera_fx: 0.0
-    camera_fy: 0.0
-    camera_cx: 0.0
-    camera_cy: 0.0
-    dist_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]
+    camera_fx: 977.871299
+    camera_fy: 973.856636
+    camera_cx: 594.894793
+    camera_cy: 301.901165
+    dist_coeffs: [-0.396147, 0.327762, 0.013861, 0.011281, -0.350658]

@@ -8,8 +8,9 @@ setup(
     version='0.0.0',
     packages=[package_name],
     scripts=[
-        'scripts/bbox_overlay_node',
+        'scripts/bytetrack_tracker_node',
         'scripts/object_detector_node',
+        'scripts/track_selector_node',
         'scripts/yolo_detector_node',
     ],
     data_files=[

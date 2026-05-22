@@ -9,7 +9,10 @@ FrameAssembler::FrameAssembler(FrameCallback cb, uint32_t stale_ms)
 
 void FrameAssembler::push_chunk(const CamHeader& hdr,
                                 const uint8_t*   payload,
-                                uint16_t         payload_len)
+                                uint16_t         payload_len,
+                                uint8_t          camera_id_override,
+                                uint16_t         width_override,
+                                uint16_t         height_override)
 {
     if (!cam_header_valid(hdr)) {
         std::cerr << "[assembler] invalid magic, dropping packet\n";
@@ -23,15 +26,17 @@ void FrameAssembler::push_chunk(const CamHeader& hdr,
     const uint32_t frame_id    = cam_header_frame_id(hdr);
     const uint32_t offset      = cam_header_offset(hdr);
     const uint32_t timestamp   = cam_header_timestamp_ms(hdr);
-    const uint8_t  camera_id   = cam_header_camera_id(hdr);
-    const bool     first_chunk = cam_header_first_chunk(hdr);
+    const uint8_t camera_id =
+        camera_id_override != 0 ? camera_id_override : cam_header_camera_id(hdr);
 
-    uint16_t width = 0, height = 0;
+    uint16_t width = width_override;
+    uint16_t height = height_override;
+    /*
     if (first_chunk && payload_len >= 4) {
         width  = ntohs(*(const uint16_t *)(payload + 0));
         height = ntohs(*(const uint16_t *)(payload + 2));
     }
-
+    */
     const FrameKey key = make_key(camera_id, frame_id);
     const uint32_t end = offset + payload_len;
 
@@ -49,11 +54,14 @@ void FrameAssembler::push_chunk(const CamHeader& hdr,
             slot.last_update  = std::chrono::steady_clock::now();
         }
 
+        slot.width  = width;
+        slot.height = height;
+        /*
         if (first_chunk && payload_len >= 4) {
             slot.width  = width;
             slot.height = height;
         }
-
+        */
         if (end > slot.buffer.size())
             slot.buffer.resize(end, 0);
 

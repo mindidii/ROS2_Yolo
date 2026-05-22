@@ -7,14 +7,22 @@ using     udp  = asio::ip::udp;
 
 UdpReceiver::UdpReceiver(asio::io_context& ioc,
                          uint16_t          port,
+                         uint8_t           camera_id,
+                         uint16_t          frame_width,
+                         uint16_t          frame_height,
                          FrameAssembler&   assembler)
     : socket_(ioc, udp::endpoint(udp::v4(), port))
     , assembler_(assembler)
     , port_(port)
+    , camera_id_(camera_id)
+    , frame_width_(frame_width)
+    , frame_height_(frame_height)
 {
     asio::socket_base::receive_buffer_size opt(4 * 1024 * 1024);
     socket_.set_option(opt);
-    std::cout << "[udp_receiver] listening on port " << port << "\n";
+    std::cout << "[udp_receiver] listening on port " << port
+              << " camera_id=0x" << std::hex << static_cast<int>(camera_id_)
+              << std::dec << " frame_size=" << frame_width_ << "x" << frame_height_ << "\n";
 }
 
 void UdpReceiver::start() { do_receive(); }
@@ -66,7 +74,13 @@ void UdpReceiver::do_receive()
                       << " res="        << cam_header_width(hdr)
                       << "x"            << cam_header_height(hdr) << "\n";
             */
-            assembler_.push_chunk(hdr, payload, payload_len);
+            assembler_.push_chunk(
+                hdr,
+                payload,
+                payload_len,
+                camera_id_,
+                frame_width_,
+                frame_height_);
             do_receive();
         });
 }

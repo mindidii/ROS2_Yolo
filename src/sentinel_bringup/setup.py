@@ -16,8 +16,12 @@ setup(
         ('share/' + package_name + '/config', [
             'config/video_rx.yaml',
             'config/image_preprocess.yaml',
+            'config/bytetrack_tracker_eo.yaml',
+            'config/bytetrack_tracker_ir.yaml',
             'config/yolo_detector_ir.yaml',
             'config/yolo_detector_eo.yaml',
+            'config/track_selector.yaml',
+            'config/track_selector_eo.yaml',
         ]),
     ],
     install_requires=['setuptools'],

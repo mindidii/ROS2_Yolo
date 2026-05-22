@@ -36,9 +36,13 @@ public:
                             uint32_t stale_ms = 2000);
 
     // 수신된 패킷 1개를 처리 (헤더 + payload)
+    // width/height override가 0이면 첫 청크 payload 앞 4바이트를 해상도로 읽는다.
     void push_chunk(const CamHeader& header,
                     const uint8_t*  payload,
-                    uint16_t        payload_len);
+                    uint16_t        payload_len,
+                    uint8_t         camera_id_override = 0,
+                    uint16_t        width_override = 0,
+                    uint16_t        height_override = 0);
 
     // 오래된 미완성 프레임 정리 (주기적으로 호출)
     void purge_stale();

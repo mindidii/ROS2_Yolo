@@ -1,0 +1,11 @@
+bytetrack_tracker_ir_node:
+  ros__parameters:
+    detection_topic: "/detections/ir"
+    tracks_topic: "/tracks/ir"
+    high_score_threshold: 0.35
+    low_score_threshold: 0.10
+    match_iou_threshold: 0.30
+    low_match_iou_threshold: 0.20
+    track_buffer_frames: 30
+    min_confirm_hits: 2
+    class_aware_matching: false

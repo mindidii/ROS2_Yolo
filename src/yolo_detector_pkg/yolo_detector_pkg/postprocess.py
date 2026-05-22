@@ -13,12 +13,25 @@ def decode_yolo_output(outputs, conf_threshold, scale_x, scale_y, num_classes, i
         if decoded is None:
             continue
 
-        class_id, score, cx, cy, w, h = decoded
+        if decoded["format"] == "xyxy":
+            x1 = decoded["x1"] * scale_x
+            y1 = decoded["y1"] * scale_y
+            x2 = decoded["x2"] * scale_x
+            y2 = decoded["y2"] * scale_y
+            class_id = decoded["class_id"]
+            score = decoded["score"]
+        else:
+            class_id = decoded["class_id"]
+            score = decoded["score"]
+            cx = decoded["cx"]
+            cy = decoded["cy"]
+            w = decoded["w"]
+            h = decoded["h"]
 
-        x1 = (cx - w / 2.0) * scale_x
-        y1 = (cy - h / 2.0) * scale_y
-        x2 = (cx + w / 2.0) * scale_x
-        y2 = (cy + h / 2.0) * scale_y
+            x1 = (cx - w / 2.0) * scale_x
+            y1 = (cy - h / 2.0) * scale_y
+            x2 = (cx + w / 2.0) * scale_x
+            y2 = (cy + h / 2.0) * scale_y
 
         detections.append({
             "class_id": class_id,
@@ -58,21 +71,38 @@ def _decode_row(row, conf_threshold, num_classes):
     if num_features < 5:
         return None
 
+    if num_features == 6:
+        score = float(row[4])
+        if score >= conf_threshold:
+            return {
+                "format": "xyxy",
+                "x1": float(row[0]),
+                "y1": float(row[1]),
+                "x2": float(row[2]),
+                "y2": float(row[3]),
+                "score": score,
+                "class_id": int(round(float(row[5]))),
+            }
+        return None
+
     cx, cy, w, h = [float(v) for v in row[:4]]
 
     # 1-class custom export: [cx, cy, w, h, score]
     if num_features == 5:
         class_id = 0
         score = float(row[4])
-    # YOLOv8/YOLO11 common export: [cx, cy, w, h, class_scores...]
-    elif num_features == 4 + num_classes:
-        class_scores = row[4:4 + num_classes]
+    # YOLOv8/YOLO11 common export: [cx, cy, w, h, class_scores...].
+    # Some models export many classes (for example 80 COCO classes) even when
+    # this package only names/uses a subset, so infer this layout from the full
+    # feature width instead of the configured local class-name count alone.
+    elif num_features == 4 + num_classes or num_features == 84:
+        class_scores = row[4:]
         class_id = int(np.argmax(class_scores))
         score = float(class_scores[class_id])
     # YOLOv5-style export: [cx, cy, w, h, obj, class_scores...]
     elif num_features >= 5 + num_classes:
         objectness = float(row[4])
-        class_scores = row[5:5 + num_classes]
+        class_scores = row[5:]
         class_id = int(np.argmax(class_scores))
         score = objectness * float(class_scores[class_id])
     else:
@@ -84,7 +114,15 @@ def _decode_row(row, conf_threshold, num_classes):
     if score < conf_threshold:
         return None
 
-    return class_id, score, cx, cy, w, h
+    return {
+        "format": "cxcywh",
+        "class_id": class_id,
+        "score": score,
+        "cx": cx,
+        "cy": cy,
+        "w": w,
+        "h": h,
+    }
 
 
 def _apply_nms(detections, iou_threshold):

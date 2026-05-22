@@ -49,7 +49,7 @@ The detector expects an ONNX model file.
 
 Recommended example:
 
-- `/ros2_ws/src/yolo_detector_pkg/model/yolo26m.onnx`
+- `/ros2_ws/src/yolo_detector_pkg/model/anti.onnx`
 
 If your model is stored somewhere else, pass it with the `model_path` parameter when running the node.
 
@@ -67,7 +67,7 @@ Start the node or launch file that publishes:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /ros2_ws/install/setup.bash
-ros2 run yolo_detector_pkg yolo_detector_node --ros-args -p model_path:=/ros2_ws/src/yolo_detector_pkg/model/yolo26m.onnx
+ros2 run yolo_detector_pkg yolo_detector_node --ros-args -p model_path:=/ros2_ws/src/yolo_detector_pkg/model/anti.onnx
 ```
 
 ## Topics

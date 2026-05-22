@@ -20,12 +20,29 @@ class YoloDetector:
         if not os.path.exists(self.model_path):
             raise FileNotFoundError(f'Model not found: {self.model_path}')
 
-        from yolo_detector_pkg.onnx_infer import OnnxObjectDetector
-        # onnxruntime 세션을 생성한 객체, 모델의 가중치를 들고 있는 주체
-        self.backend = OnnxObjectDetector(self.model_path)
+        model_ext = os.path.splitext(self.model_path)[1].lower()
+        if model_ext == '.engine':
+            from yolo_detector_pkg.tensorrt_infer import TensorRtObjectDetector
+
+            self.backend = TensorRtObjectDetector(self.model_path)
+            return
+
+        if model_ext == '.onnx':
+            from yolo_detector_pkg.onnx_infer import OnnxObjectDetector
+
+            # onnxruntime 세션을 생성한 객체, 모델의 가중치를 들고 있는 주체
+            self.backend = OnnxObjectDetector(self.model_path)
+            return
+
+        raise RuntimeError(f'Unsupported model format: {self.model_path}')
     # 모델 로드 여부 확인 
     def is_loaded(self) -> bool:
         return self.backend is not None
+
+    def get_execution_providers(self) -> list[str]:
+        if self.backend is None:
+            return []
+        return list(getattr(self.backend, 'providers', []))
     
     # 임계값 변경 
     def set_conf_threshold(self, conf_threshold: float):
@@ -53,6 +70,7 @@ class YoloDetector:
         # Detection 객체 리스트 반환
         return [
             Detection(
+                class_id=int(det['class_id']),
                 class_name=get_class_name(int(det['class_id'])),
                 score=float(det['score']),
                 x1=float(det['x1']),

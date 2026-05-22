@@ -1,0 +1,9 @@
+track_selector_node:
+  ros__parameters:
+    tracks_topic_eo: "/tracks/eo"
+    tracks_topic_ir: "/tracks/ir"
+    system_mode_topic: "/system/mode"
+    system_track_id_topic: "/system/track_id"
+    stream_select_topic: "/system/stream_select"
+    driver_detection_topic: "/driver/detection"
+    auto_select_policy: "first_detected"

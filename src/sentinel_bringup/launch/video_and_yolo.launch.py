@@ -12,8 +12,9 @@ def generate_launch_description():
     enable_preprocess = LaunchConfiguration('enable_preprocess')
     enable_yolo_ir = LaunchConfiguration('enable_yolo_ir')
     enable_yolo_eo = LaunchConfiguration('enable_yolo_eo')
-    enable_overlay_ir = LaunchConfiguration('enable_overlay_ir')
-    enable_overlay_eo = LaunchConfiguration('enable_overlay_eo')
+    enable_tracker_ir = LaunchConfiguration('enable_tracker_ir')
+    enable_tracker_eo = LaunchConfiguration('enable_tracker_eo')
+    enable_track_selector = LaunchConfiguration('enable_track_selector')
 
     video_rx_config = PathJoinSubstitution([
         FindPackageShare('sentinel_bringup'),
@@ -39,10 +40,28 @@ def generate_launch_description():
         'yolo_detector_eo.yaml'
     ])
 
+    tracker_ir_config = PathJoinSubstitution([
+        FindPackageShare('sentinel_bringup'),
+        'config',
+        'bytetrack_tracker_ir.yaml'
+    ])
+
+    tracker_eo_config = PathJoinSubstitution([
+        FindPackageShare('sentinel_bringup'),
+        'config',
+        'bytetrack_tracker_eo.yaml'
+    ])
+
+    track_selector_config = PathJoinSubstitution([
+        FindPackageShare('sentinel_bringup'),
+        'config',
+        'track_selector.yaml'
+    ])
+
     video_rx_node = Node(
-        package='video_rx_pkg',
-        executable='video_rx_node',
-        name='video_rx_node',
+        package='video_rx_pkg2',
+        executable='video_rx_node2',
+        name='video_rx_node2',
         output='screen',
         parameters=[video_rx_config],
         condition=IfCondition(enable_video_rx),
@@ -75,45 +94,38 @@ def generate_launch_description():
         condition=IfCondition(enable_yolo_eo),
     )
 
-    bbox_overlay_ir_node = Node(
+    bytetrack_tracker_ir_node = Node(
         package='yolo_detector_pkg',
-        executable='bbox_overlay_node',
-        name='bbox_overlay_ir_node',
+        executable='bytetrack_tracker_node',
+        name='bytetrack_tracker_ir_node',
         output='screen',
-        parameters=[{
-            'image_topic': '/yolo/ir/image_raw',
-            'detection_topic': '/detections/ir',
-            'annotated_image_topic': '/yolo/ir/annotated_image',
-            'sync_queue_size': 30,
-            'line_thickness': 2,
-            'font_scale': 0.5,
-            'min_score': 0.0,
-        }],
-        condition=IfCondition(enable_overlay_ir),
+        parameters=[tracker_ir_config],
+        condition=IfCondition(enable_tracker_ir),
     )
 
-    bbox_overlay_eo_node = Node(
+    bytetrack_tracker_eo_node = Node(
         package='yolo_detector_pkg',
-        executable='bbox_overlay_node',
-        name='bbox_overlay_eo_node',
+        executable='bytetrack_tracker_node',
+        name='bytetrack_tracker_eo_node',
         output='screen',
-        parameters=[{
-            'image_topic': '/yolo/eo/image_raw',
-            'detection_topic': '/detections/eo',
-            'annotated_image_topic': '/yolo/eo/annotated_image',
-            'sync_queue_size': 30,
-            'line_thickness': 2,
-            'font_scale': 0.5,
-            'min_score': 0.0,
-        }],
-        condition=IfCondition(enable_overlay_eo),
+        parameters=[tracker_eo_config],
+        condition=IfCondition(enable_tracker_eo),
+    )
+
+    track_selector_node = Node(
+        package='yolo_detector_pkg',
+        executable='track_selector_node',
+        name='track_selector_node',
+        output='screen',
+        parameters=[track_selector_config],
+        condition=IfCondition(enable_track_selector),
     )
 
     return LaunchDescription([
         DeclareLaunchArgument(
             'enable_video_rx',
             default_value='true',
-            description='Start UDP video receiver node.',
+            description='Start EO capture-card and IR UDP video receiver node.',
         ),
         DeclareLaunchArgument(
             'enable_preprocess',
@@ -131,19 +143,25 @@ def generate_launch_description():
             description='Start EO YOLO detector node.',
         ),
         DeclareLaunchArgument(
-            'enable_overlay_ir',
+            'enable_tracker_ir',
             default_value='true',
-            description='Start IR bbox overlay image node.',
+            description='Start IR ByteTrack-style tracker node.',
         ),
         DeclareLaunchArgument(
-            'enable_overlay_eo',
+            'enable_tracker_eo',
             default_value='true',
-            description='Start EO bbox overlay image node.',
+            description='Start EO ByteTrack-style tracker node.',
+        ),
+        DeclareLaunchArgument(
+            'enable_track_selector',
+            default_value='true',
+            description='Start stream-aware track selector for driver detection.',
         ),
         video_rx_node,
         image_preprocess_node,
         yolo_detector_ir_node,
         yolo_detector_eo_node,
-        bbox_overlay_ir_node,
-        bbox_overlay_eo_node,
+        bytetrack_tracker_ir_node,
+        bytetrack_tracker_eo_node,
+        track_selector_node,
     ])

@@ -1,18 +1,33 @@
 yolo_detector_ir_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/last.onnx"
-    image_topic: "/video/ir/preprocessed"
-    frame_info_topic: "/video/ir/preprocessed/frame_info"
-    conf_threshold: 0.25
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/ir_detect.engine"
+    image_topic: "/camera/ir"
+    frame_info_topic: "/camera/ir/frame_info"
+    conf_threshold: 0.2
+    stale_track_frames: 20
+    drone_hold_min_conf: 0.2
+    drone_hold_missing_frames: 10
+    hold_class_ids: "0"
+    smooth_alpha: 0.35
+    drone_max_height_ratio: 0.80
+    drone_max_width_ratio: 0.80
+    drone_max_area_ratio: 0.80
+    class_min_area_ratios: "0:0.0002"
+    class_conf_thresholds: "0:0.2"
+    allowed_class_ids: "0"
+    class_filter: "person"
     input_width: 640
     input_height: 640
     enabled: true
     inference_period_sec: 0.05
-    synced_image_topic: "/yolo/ir/image_raw"
+    inference_frame_stride: 3
     sync_queue_size: 30
+    process_latest_only: true
     detection_topic: "/detections/ir"
-    driver_detection_topic: "/driver/ir/detection"
+    driver_detection_topic: "/driver/detection"
+    publish_driver_detection: false
     driver_frame_size_topic: "/driver/ir/frame_size"
+    detection_hold_sec: 1.0
     track_max_missed_frames: 10
     track_max_center_distance_px: 200.0
     status_topic: "/yolo/ir/status"
