@@ -31,6 +31,7 @@ public:
         declare_parameter<int>("eo_width", 1280);
         declare_parameter<int>("eo_height", 720);
         declare_parameter<bool>("enable_calibration", false);
+        declare_parameter<bool>("eo_flip_vertical", false);
         declare_parameter<int>("calibration_width", 640);
         declare_parameter<int>("calibration_height", 480);
         declare_parameter<double>("camera_fx", 0.0);
@@ -50,6 +51,7 @@ public:
             std::max<int64_t>(1, get_parameter("calibration_width").as_int()));
         calibration_height_ = static_cast<uint32_t>(
             std::max<int64_t>(1, get_parameter("calibration_height").as_int()));
+        eo_flip_vertical_ = get_parameter("eo_flip_vertical").as_bool();
 
         eo_pipeline_.image_topic = get_parameter("eo_image_topic").as_string();
         eo_pipeline_.frame_info_topic = get_parameter("eo_frame_info_topic").as_string();
@@ -77,6 +79,10 @@ public:
             "EO expected size: %ux%u",
             expected_width_,
             expected_height_);
+        RCLCPP_INFO(
+            get_logger(),
+            "EO vertical flip: %s",
+            eo_flip_vertical_ ? "enabled" : "disabled");
     }
 
 private:
@@ -146,28 +152,41 @@ private:
         result.successful = true;
 
         for (const auto & parameter : parameters) {
-            if (parameter.get_name() != "enable_calibration") {
+            if (parameter.get_name() == "enable_calibration") {
+                if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful = false;
+                    result.reason = "enable_calibration must be a bool";
+                    return result;
+                }
+
+                const bool requested = parameter.as_bool();
+                if (requested && !calibration_configured_) {
+                    result.successful = false;
+                    result.reason = "camera_fx/fy/cx/cy must be set before enabling calibration";
+                    return result;
+                }
+
+                calibration_enabled_ = requested;
+                RCLCPP_INFO(
+                    get_logger(),
+                    "EO calibration %s by parameter update",
+                    calibration_enabled_ ? "enabled" : "disabled");
                 continue;
             }
 
-            if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
-                result.successful = false;
-                result.reason = "enable_calibration must be a bool";
-                return result;
-            }
+            if (parameter.get_name() == "eo_flip_vertical") {
+                if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+                    result.successful = false;
+                    result.reason = "eo_flip_vertical must be a bool";
+                    return result;
+                }
 
-            const bool requested = parameter.as_bool();
-            if (requested && !calibration_configured_) {
-                result.successful = false;
-                result.reason = "camera_fx/fy/cx/cy must be set before enabling calibration";
-                return result;
+                eo_flip_vertical_ = parameter.as_bool();
+                RCLCPP_INFO(
+                    get_logger(),
+                    "EO vertical flip %s by parameter update",
+                    eo_flip_vertical_ ? "enabled" : "disabled");
             }
-
-            calibration_enabled_ = requested;
-            RCLCPP_INFO(
-                get_logger(),
-                "EO calibration %s by parameter update",
-                calibration_enabled_ ? "enabled" : "disabled");
         }
 
         return result;
@@ -286,16 +305,17 @@ private:
             const auto start = std::chrono::steady_clock::now();
             cv::Mat input = cv_bridge::toCvCopy(image_msg, "bgr8")->image;
             cv::Mat calibrated = calibrate(input);
+            cv::Mat processed = flip_vertical(calibrated);
             const auto elapsed_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - start).count();
 
             auto output_image =
-                cv_bridge::CvImage(image_msg->header, "bgr8", calibrated).toImageMsg();
+                cv_bridge::CvImage(image_msg->header, "bgr8", processed).toImageMsg();
             eo_pipeline_.image_pub->publish(*output_image);
 
             auto output_frame_info = *frame_info_msg;
-            output_frame_info.width = static_cast<uint32_t>(calibrated.cols);
-            output_frame_info.height = static_cast<uint32_t>(calibrated.rows);
+            output_frame_info.width = static_cast<uint32_t>(processed.cols);
+            output_frame_info.height = static_cast<uint32_t>(processed.rows);
             eo_pipeline_.frame_info_pub->publish(output_frame_info);
 
             eo_pipeline_.output_images++;
@@ -303,12 +323,13 @@ private:
                 get_logger(),
                 *get_clock(),
                 2000,
-                "EO calibration output [%s]: %dx%d count=%lu calibration=%.2fms",
+                "EO preprocess output [%s]: %dx%d count=%lu calibration_flip=%.2fms flip_vertical=%s",
                 eo_pipeline_.output_topic.c_str(),
-                calibrated.cols,
-                calibrated.rows,
+                processed.cols,
+                processed.rows,
                 eo_pipeline_.output_images,
-                elapsed_ms);
+                elapsed_ms,
+                eo_flip_vertical_ ? "true" : "false");
         } catch (const std::exception & e) {
             RCLCPP_ERROR(
                 get_logger(),
@@ -327,6 +348,17 @@ private:
         cv::Mat calibrated;
         cv::undistort(input, calibrated, scaled_camera_matrix(input.cols, input.rows), dist_coeffs_);
         return calibrated;
+    }
+
+    cv::Mat flip_vertical(const cv::Mat & input) const
+    {
+        if (!eo_flip_vertical_) {
+            return input;
+        }
+
+        cv::Mat flipped;
+        cv::flip(input, flipped, 0);
+        return flipped;
     }
 
     cv::Mat scaled_camera_matrix(int image_width, int image_height) const
@@ -376,6 +408,7 @@ private:
     uint32_t calibration_height_{480};
     bool calibration_configured_{false};
     bool calibration_enabled_{false};
+    bool eo_flip_vertical_{false};
     cv::Mat base_camera_matrix_;
     cv::Mat dist_coeffs_;
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr

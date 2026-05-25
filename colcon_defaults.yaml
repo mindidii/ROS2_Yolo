@@ -1,7 +1,4 @@
 build:
-  packages-skip:
-    - cv_bridge
-    - image_geometry
   cmake-args:
     - -DPython3_EXECUTABLE=/usr/bin/python3.12
     - -DPython3_INCLUDE_DIR=/usr/include/python3.12

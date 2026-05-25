@@ -4,7 +4,7 @@ ROS 2 Jazzy workspace for video reception and YOLO-based object detection.
 
 ## Packages
 
-- `video_rx_pkg`
+- `video_rx_pkg2`
   - Receives video frames and publishes ROS topics.
 - `yolo_detector_pkg`
   - Runs ONNX-based YOLO inference and publishes detection results.

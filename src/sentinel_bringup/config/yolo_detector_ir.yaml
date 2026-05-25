@@ -20,7 +20,7 @@ yolo_detector_ir_node:
     input_height: 640
     enabled: true
     inference_period_sec: 0.05
-    inference_frame_stride: 3
+    inference_frame_stride: 1
     sync_queue_size: 30
     process_latest_only: true
     detection_topic: "/detections/ir"

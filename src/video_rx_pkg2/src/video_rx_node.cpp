@@ -26,6 +26,7 @@ public:
     : Node("video_rx_node")
     {
         declare_parameter<std::string>("eo_device", "/dev/video0");
+        declare_parameter<int>("eo_io_mode", 0);
         declare_parameter<int>("eo_width", 1280);
         declare_parameter<int>("eo_height", 720);
         declare_parameter<int>("eo_fps", 60);
@@ -33,6 +34,8 @@ public:
         declare_parameter<std::string>("eo_frame_info_topic", "/camera/eo/frame_info");
         declare_parameter<std::string>("eo_source_name", "capturecard_eo");
         declare_parameter<std::string>("eo_frame_id", "camera_eo");
+        declare_parameter<bool>("eo_flip_vertical", false);
+        declare_parameter<bool>("eo_flip_horizontal", false);
 
         declare_parameter<int>("ir_udp_port", 5001);
         declare_parameter<int>("ir_camera_id", static_cast<int>(CAM_ID_IR));
@@ -43,14 +46,18 @@ public:
         declare_parameter<std::string>("ir_frame_info_topic", "/camera/ir/frame_info");
         declare_parameter<std::string>("ir_source_name", "jetson_udp_ir");
         declare_parameter<std::string>("ir_frame_id", "camera_ir");
+        declare_parameter<bool>("ir_rotate_ccw_90", false);
         declare_parameter<int>("stale_ms", 2000);
 
         eo_device_ = get_parameter("eo_device").as_string();
+        eo_io_mode_ = get_parameter("eo_io_mode").as_int();
         eo_width_ = static_cast<uint16_t>(get_parameter("eo_width").as_int());
         eo_height_ = static_cast<uint16_t>(get_parameter("eo_height").as_int());
         eo_fps_ = get_parameter("eo_fps").as_int();
         eo_source_name_ = get_parameter("eo_source_name").as_string();
         eo_ros_frame_id_ = get_parameter("eo_frame_id").as_string();
+        eo_flip_vertical_ = get_parameter("eo_flip_vertical").as_bool();
+        eo_flip_horizontal_ = get_parameter("eo_flip_horizontal").as_bool();
 
         eo_image_pub_ = create_publisher<sensor_msgs::msg::Image>(
             get_parameter("eo_publish_topic").as_string(), 10);
@@ -66,6 +73,7 @@ public:
         ir_pipeline_.frame_info_topic = get_parameter("ir_frame_info_topic").as_string();
         ir_pipeline_.source_name = get_parameter("ir_source_name").as_string();
         ir_pipeline_.ros_frame_id = get_parameter("ir_frame_id").as_string();
+        ir_rotate_ccw_90_ = get_parameter("ir_rotate_ccw_90").as_bool();
         stale_ms_ = static_cast<uint32_t>(
             std::max<int64_t>(100, get_parameter("stale_ms").as_int()));
 
@@ -104,11 +112,23 @@ public:
             eo_fps_);
         RCLCPP_INFO(
             get_logger(),
+            "EO vertical flip: %s",
+            eo_flip_vertical_ ? "enabled" : "disabled");
+        RCLCPP_INFO(
+            get_logger(),
+            "EO horizontal flip: %s",
+            eo_flip_horizontal_ ? "enabled" : "disabled");
+        RCLCPP_INFO(
+            get_logger(),
             "IR UDP    : port=%u %ux%u @ %.1ffps",
             ir_pipeline_.udp_port,
             ir_pipeline_.frame_width,
             ir_pipeline_.frame_height,
             ir_pipeline_.expected_fps);
+        RCLCPP_INFO(
+            get_logger(),
+            "IR rotate CCW 90: %s",
+            ir_rotate_ccw_90_ ? "enabled" : "disabled");
     }
 
     ~VideoRxNode() override
@@ -147,11 +167,12 @@ private:
         rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub;
         rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr frame_info_pub;
     };
-3
     void eo_capture_loop()
     {
         const std::string pipeline =
-            "v4l2src device=" + eo_device_ + " io-mode=2 do-timestamp=true ! "
+            "v4l2src device=" + eo_device_ +
+            (eo_io_mode_ > 0 ? " io-mode=" + std::to_string(eo_io_mode_) : "") +
+            " do-timestamp=true ! "
             "image/jpeg,width=" + std::to_string(eo_width_) +
             ",height=" + std::to_string(eo_height_) +
             ",framerate=" + std::to_string(eo_fps_) + "/1 ! "
@@ -182,6 +203,14 @@ private:
                     "EO: failed to read frame");
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
+            }
+
+            if (eo_flip_vertical_ && eo_flip_horizontal_) {
+                cv::flip(frame, frame, -1);
+            } else if (eo_flip_vertical_) {
+                cv::flip(frame, frame, 0);
+            } else if (eo_flip_horizontal_) {
+                cv::flip(frame, frame, 1);
             }
 
             const rclcpp::Time stamp = now();
@@ -246,6 +275,9 @@ private:
             RCLCPP_WARN(get_logger(), "Failed to convert YUYV frame");
             return;
         }
+        if (ir_rotate_ccw_90_) {
+            cv::rotate(image, image, cv::ROTATE_90_COUNTERCLOCKWISE);
+        }
 
         const int64_t stamp_ns = static_cast<int64_t>(frame.timestamp_ms) * 1000000LL;
         const rclcpp::Time stamp(stamp_ns, RCL_SYSTEM_TIME);
@@ -260,8 +292,8 @@ private:
         sentinel_interfaces::msg::FrameInfo info_msg;
         info_msg.stamp = stamp;
         info_msg.frame_id = frame.frame_id;
-        info_msg.width = frame.width;
-        info_msg.height = frame.height;
+        info_msg.width = static_cast<uint32_t>(image.cols);
+        info_msg.height = static_cast<uint32_t>(image.rows);
         info_msg.fps = static_cast<float>(
             ir_pipeline_.current_fps.load() > 0.0
                 ? ir_pipeline_.current_fps.load()
@@ -311,11 +343,14 @@ private:
     }
 
     std::string eo_device_;
+    int eo_io_mode_{0};
     uint16_t eo_width_{};
     uint16_t eo_height_{};
     int eo_fps_{};
     std::string eo_source_name_;
     std::string eo_ros_frame_id_;
+    bool eo_flip_vertical_{false};
+    bool eo_flip_horizontal_{false};
     std::atomic<bool> eo_running_{false};
     std::thread eo_thread_;
     std::atomic<uint32_t> eo_published_frames_{0};
@@ -326,6 +361,7 @@ private:
     rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr eo_frame_info_pub_;
 
     IrPipeline ir_pipeline_;
+    bool ir_rotate_ccw_90_{false};
     std::unique_ptr<FrameAssembler> assembler_;
     std::unique_ptr<UdpReceiver> ir_receiver_;
     using IoWorkGuard = boost::asio::executor_work_guard<

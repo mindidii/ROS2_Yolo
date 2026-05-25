@@ -1,0 +1,25 @@
+yolo_detector_eo_node:
+  ros__parameters:
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11s.engine"
+    image_topic: "/video/eo/preprocessed"
+    frame_info_topic: "/video/eo/preprocessed/frame_info"
+    detection_topic: "/detections/eo"
+    conf_threshold: 0.25
+    iou_threshold: 0.45
+    imgsz: 640
+    device: "0"
+    half: false
+    max_det: 300
+    enabled: true
+    publish_empty: true
+    log_period_sec: 2.0
+    frame_info_cache_size: 60
+    allowed_class_ids: "0,1"
+    class_filter: "person,drone"
+    secondary_model_path: ""
+    secondary_allowed_class_ids: ""
+    secondary_class_filter: ""
+    secondary_conf_threshold: 0.25
+    secondary_output_class_id: -1
+    secondary_output_class_name: ""
+    dual_model_mode: "sequential"

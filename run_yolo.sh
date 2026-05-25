@@ -27,4 +27,20 @@ if [ ! -x "${TRACK_SELECTOR_EXEC}" ] || [ ! -f "${TRACK_SELECTOR_CONFIG}" ]; the
     set -- "enable_track_selector:=false" "$@"
 fi
 
+PYTORCH_YOLO_EXEC="${ROS_WS}/install/yolo_detector_pkg/lib/yolo_detector_pkg/ultralytics_yolo_node"
+PYTORCH_YOLO_EO_CONFIG="${ROS_WS}/install/sentinel_bringup/share/sentinel_bringup/config/ultralytics_yolo_eo.yaml"
+PYTORCH_YOLO_IR_CONFIG="${ROS_WS}/install/sentinel_bringup/share/sentinel_bringup/config/ultralytics_yolo_ir.yaml"
+if [ ! -x "${PYTORCH_YOLO_EXEC}" ]; then
+    echo "PyTorch YOLO executable is missing; launching with enable_yolo_ir:=false enable_yolo_eo:=false" >&2
+    set -- "enable_yolo_ir:=false" "enable_yolo_eo:=false" "$@"
+fi
+if [ ! -f "${PYTORCH_YOLO_EO_CONFIG}" ]; then
+    echo "PyTorch EO YOLO config is missing; launching with enable_yolo_eo:=false" >&2
+    set -- "enable_yolo_eo:=false" "$@"
+fi
+if [ ! -f "${PYTORCH_YOLO_IR_CONFIG}" ]; then
+    echo "PyTorch IR YOLO config is missing; launching with enable_yolo_ir:=false" >&2
+    set -- "enable_yolo_ir:=false" "$@"
+fi
+
 exec ros2 launch sentinel_bringup video_and_yolo.launch.py "$@"

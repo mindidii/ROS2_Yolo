@@ -20,6 +20,8 @@ setup(
             'config/bytetrack_tracker_ir.yaml',
             'config/yolo_detector_ir.yaml',
             'config/yolo_detector_eo.yaml',
+            'config/ultralytics_yolo_eo.yaml',
+            'config/ultralytics_yolo_ir.yaml',
             'config/track_selector.yaml',
             'config/track_selector_eo.yaml',
         ]),

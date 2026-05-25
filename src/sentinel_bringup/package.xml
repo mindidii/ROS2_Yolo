@@ -11,7 +11,7 @@
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>video_rx_pkg</exec_depend>
+  <exec_depend>video_rx_pkg2</exec_depend>
   <exec_depend>yolo_detector_pkg</exec_depend>
 
   <export>

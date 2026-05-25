@@ -10,6 +10,7 @@ image_preprocess_node:
     eo_width: 1280
     eo_height: 720
     enable_calibration: true
+    eo_flip_vertical: false
     calibration_width: 1280
     calibration_height: 720
 

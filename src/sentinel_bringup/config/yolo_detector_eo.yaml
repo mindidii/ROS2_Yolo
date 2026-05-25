@@ -1,6 +1,6 @@
 yolo_detector_eo_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/eo_detect.engine"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11s.engine"
     image_topic: "/video/eo/preprocessed"
     frame_info_topic: "/video/eo/preprocessed/frame_info"
     conf_threshold: 0.2
@@ -13,14 +13,14 @@ yolo_detector_eo_node:
     drone_max_width_ratio: 0.80
     drone_max_area_ratio: 0.80
     class_min_area_ratios: "0:0.0002,1:0.00002"
-    class_conf_thresholds: "0:0.2,1:0.5"
+    class_conf_thresholds: "0:0.2,1:0.25"
     allowed_class_ids: "0,1"
     class_filter: ""
     input_width: 640
     input_height: 640
     enabled: true
     inference_period_sec: 0.05
-    inference_frame_stride: 3
+    inference_frame_stride: 1
     sync_queue_size: 30
     process_latest_only: true
     detection_topic: "/detections/eo"

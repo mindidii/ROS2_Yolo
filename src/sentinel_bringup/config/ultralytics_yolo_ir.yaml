@@ -1,0 +1,18 @@
+yolo_detector_ir_node:
+  ros__parameters:
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt"
+    image_topic: "/camera/ir"
+    frame_info_topic: "/camera/ir/frame_info"
+    detection_topic: "/detections/ir"
+    conf_threshold: 0.25
+    iou_threshold: 0.45
+    imgsz: 640
+    device: "0"
+    half: false
+    max_det: 300
+    enabled: true
+    publish_empty: true
+    log_period_sec: 2.0
+    frame_info_cache_size: 60
+    allowed_class_ids: "0"
+    class_filter: "person"
