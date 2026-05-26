@@ -1,6 +1,6 @@
 yolo_detector_eo_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11s.engine"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/best2.pt"
     image_topic: "/video/eo/preprocessed"
     frame_info_topic: "/video/eo/preprocessed/frame_info"
     detection_topic: "/detections/eo"
@@ -23,3 +23,5 @@ yolo_detector_eo_node:
     secondary_output_class_id: -1
     secondary_output_class_name: ""
     dual_model_mode: "sequential"
+    latency_log_path: "/ros2_ws/log/latency_yolo_eo.csv"
+    latency_log_every_n: 1

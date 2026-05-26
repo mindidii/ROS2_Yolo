@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <utility>
@@ -48,6 +50,8 @@ public:
         declare_parameter<std::string>("ir_frame_id", "camera_ir");
         declare_parameter<bool>("ir_rotate_ccw_90", false);
         declare_parameter<int>("stale_ms", 2000);
+        declare_parameter<std::string>("latency_log_path", "");
+        declare_parameter<int>("latency_log_every_n", 1);
 
         eo_device_ = get_parameter("eo_device").as_string();
         eo_io_mode_ = get_parameter("eo_io_mode").as_int();
@@ -76,6 +80,9 @@ public:
         ir_rotate_ccw_90_ = get_parameter("ir_rotate_ccw_90").as_bool();
         stale_ms_ = static_cast<uint32_t>(
             std::max<int64_t>(100, get_parameter("stale_ms").as_int()));
+        latency_log_path_ = get_parameter("latency_log_path").as_string();
+        latency_log_every_n_ = std::max<int64_t>(1, get_parameter("latency_log_every_n").as_int());
+        open_latency_log();
 
         initialize_ir_pipeline(ir_pipeline_);
 
@@ -204,6 +211,7 @@ private:
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
+            const auto read_done = std::chrono::steady_clock::now();
 
             if (eo_flip_vertical_ && eo_flip_horizontal_) {
                 cv::flip(frame, frame, -1);
@@ -231,7 +239,17 @@ private:
             info_msg.source = eo_source_name_;
             eo_frame_info_pub_->publish(info_msg);
 
-            eo_published_frames_.fetch_add(1);
+            const uint32_t frame_count = eo_published_frames_.fetch_add(1) + 1;
+            const auto publish_done = std::chrono::steady_clock::now();
+            log_latency_row(
+                "video_rx",
+                "eo",
+                static_cast<uint32_t>(frame_count),
+                stamp,
+                "read_to_publish_ms",
+                std::chrono::duration<double, std::milli>(publish_done - read_done).count(),
+                static_cast<double>(frame.cols),
+                static_cast<double>(frame.rows));
         }
         cap.release();
         RCLCPP_INFO(get_logger(), "EO: capture loop stopped");
@@ -251,6 +269,7 @@ private:
 
     void handle_ir_frame(AssembledFrame frame)
     {
+        const auto start = std::chrono::steady_clock::now();
         const size_t expected_yuyv_bytes =
             static_cast<size_t>(frame.width) * static_cast<size_t>(frame.height) * 2U;
         if (frame.width == 0 || frame.height == 0 ||
@@ -301,8 +320,78 @@ private:
         info_msg.source = ir_pipeline_.source_name;
         ir_pipeline_.frame_info_pub->publish(info_msg);
 
-        ir_pipeline_.published_frames.fetch_add(1);
+        const uint32_t frame_count = ir_pipeline_.published_frames.fetch_add(1) + 1;
+        const auto publish_done = std::chrono::steady_clock::now();
+        log_latency_row(
+            "video_rx",
+            "ir",
+            frame.frame_id,
+            stamp,
+            "udp_assembly_ms",
+            frame.assembly_ms,
+            static_cast<double>(image.cols),
+            static_cast<double>(image.rows));
+        log_latency_row(
+            "video_rx",
+            "ir",
+            frame.frame_id,
+            stamp,
+            "ir_convert_publish_ms",
+            std::chrono::duration<double, std::milli>(publish_done - start).count(),
+            static_cast<double>(image.cols),
+            static_cast<double>(image.rows));
+        (void)frame_count;
         update_ir_fps();
+    }
+
+    void open_latency_log()
+    {
+        if (latency_log_path_.empty()) {
+            return;
+        }
+
+        latency_log_.open(latency_log_path_, std::ios::out | std::ios::app);
+        if (!latency_log_.is_open()) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Failed to open latency log file: %s",
+                latency_log_path_.c_str());
+            return;
+        }
+        latency_log_ << "time_ns,node,stream,frame_id,stamp_ns,metric,value_ms,width,height\n";
+        latency_log_.flush();
+        RCLCPP_INFO(get_logger(), "Latency log enabled: %s", latency_log_path_.c_str());
+    }
+
+    void log_latency_row(
+        const char * node_name,
+        const char * stream,
+        uint32_t frame_id,
+        const rclcpp::Time & stamp,
+        const char * metric,
+        double value_ms,
+        double width,
+        double height)
+    {
+        if (!latency_log_.is_open()) {
+            return;
+        }
+        if ((latency_log_counter_.fetch_add(1) % latency_log_every_n_) != 0) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(latency_log_mutex_);
+        latency_log_
+            << now().nanoseconds() << ','
+            << node_name << ','
+            << stream << ','
+            << frame_id << ','
+            << stamp.nanoseconds() << ','
+            << metric << ','
+            << value_ms << ','
+            << width << ','
+            << height << '\n';
+        latency_log_.flush();
     }
 
     void update_ir_fps()
@@ -370,6 +459,11 @@ private:
     std::unique_ptr<IoWorkGuard> io_work_;
     std::thread io_thread_;
     uint32_t stale_ms_{2000};
+    std::string latency_log_path_;
+    int64_t latency_log_every_n_{1};
+    std::ofstream latency_log_;
+    std::mutex latency_log_mutex_;
+    std::atomic<uint64_t> latency_log_counter_{0};
 
     rclcpp::TimerBase::SharedPtr status_timer_;
 };

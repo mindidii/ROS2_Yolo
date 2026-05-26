@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -38,6 +39,8 @@ public:
         declare_parameter<double>("camera_fy", 0.0);
         declare_parameter<double>("camera_cx", 0.0);
         declare_parameter<double>("camera_cy", 0.0);
+        declare_parameter<std::string>("latency_log_path", "");
+        declare_parameter<int>("latency_log_every_n", 1);
         declare_parameter<std::vector<double>>(
             "dist_coeffs",
             std::vector<double>{0.0, 0.0, 0.0, 0.0, 0.0});
@@ -58,6 +61,9 @@ public:
         eo_pipeline_.output_topic = get_parameter("eo_output_topic").as_string();
         eo_pipeline_.output_frame_info_topic =
             get_parameter("eo_output_frame_info_topic").as_string();
+        latency_log_path_ = get_parameter("latency_log_path").as_string();
+        latency_log_every_n_ = std::max<int64_t>(1, get_parameter("latency_log_every_n").as_int());
+        open_latency_log();
 
         load_calibration();
         parameter_callback_handle_ = add_on_set_parameters_callback(
@@ -303,6 +309,7 @@ private:
     {
         try {
             const auto start = std::chrono::steady_clock::now();
+            const auto callback_start = now();
             cv::Mat input = cv_bridge::toCvCopy(image_msg, "bgr8")->image;
             cv::Mat calibrated = calibrate(input);
             cv::Mat processed = flip_vertical(calibrated);
@@ -319,6 +326,22 @@ private:
             eo_pipeline_.frame_info_pub->publish(output_frame_info);
 
             eo_pipeline_.output_images++;
+            log_latency_row(
+                "eo",
+                output_frame_info.frame_id,
+                image_msg->header.stamp,
+                "preprocess_ms",
+                elapsed_ms,
+                processed.cols,
+                processed.rows);
+            log_latency_row(
+                "eo",
+                output_frame_info.frame_id,
+                image_msg->header.stamp,
+                "capture_to_preprocess_start_ms",
+                (callback_start - rclcpp::Time(image_msg->header.stamp)).seconds() * 1000.0,
+                processed.cols,
+                processed.rows);
             RCLCPP_INFO_THROTTLE(
                 get_logger(),
                 *get_clock(),
@@ -337,6 +360,56 @@ private:
                 eo_pipeline_.output_topic.c_str(),
                 e.what());
         }
+    }
+
+    void open_latency_log()
+    {
+        if (latency_log_path_.empty()) {
+            return;
+        }
+
+        latency_log_.open(latency_log_path_, std::ios::out | std::ios::app);
+        if (!latency_log_.is_open()) {
+            RCLCPP_WARN(
+                get_logger(),
+                "Failed to open latency log file: %s",
+                latency_log_path_.c_str());
+            return;
+        }
+        latency_log_ << "time_ns,node,stream,frame_id,stamp_ns,metric,value_ms,width,height\n";
+        latency_log_.flush();
+        RCLCPP_INFO(get_logger(), "Latency log enabled: %s", latency_log_path_.c_str());
+    }
+
+    void log_latency_row(
+        const char * stream,
+        uint32_t frame_id,
+        const builtin_interfaces::msg::Time & stamp,
+        const char * metric,
+        double value_ms,
+        int width,
+        int height)
+    {
+        if (!latency_log_.is_open()) {
+            return;
+        }
+        if ((latency_log_counter_++ % latency_log_every_n_) != 0) {
+            return;
+        }
+
+        const int64_t stamp_ns = stamp_to_ns(stamp);
+        std::lock_guard<std::mutex> lock(mutex_);
+        latency_log_
+            << now().nanoseconds() << ','
+            << "image_preprocess" << ','
+            << stream << ','
+            << frame_id << ','
+            << stamp_ns << ','
+            << metric << ','
+            << value_ms << ','
+            << width << ','
+            << height << '\n';
+        latency_log_.flush();
     }
 
     cv::Mat calibrate(const cv::Mat & input)
@@ -411,6 +484,10 @@ private:
     bool eo_flip_vertical_{false};
     cv::Mat base_camera_matrix_;
     cv::Mat dist_coeffs_;
+    std::string latency_log_path_;
+    int64_t latency_log_every_n_{1};
+    std::ofstream latency_log_;
+    uint64_t latency_log_counter_{0};
     rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
         parameter_callback_handle_;
 };

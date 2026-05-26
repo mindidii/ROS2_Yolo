@@ -49,9 +49,11 @@ void FrameAssembler::push_chunk(const CamHeader& hdr,
 
         auto& slot = slots_[key];
 
+        const auto receive_time = std::chrono::steady_clock::now();
         if (slot.buffer.empty()) {
             slot.timestamp_ms = timestamp;
-            slot.last_update  = std::chrono::steady_clock::now();
+            slot.first_update = receive_time;
+            slot.last_update  = receive_time;
         }
 
         slot.width  = width;
@@ -62,12 +64,19 @@ void FrameAssembler::push_chunk(const CamHeader& hdr,
             slot.height = height;
         }
         */
-        if (end > slot.buffer.size())
+        if (end > slot.buffer.size()) {
             slot.buffer.resize(end, 0);
+            slot.received_mask.resize(end, 0);
+        }
 
         std::memcpy(slot.buffer.data() + offset, payload, payload_len);
-        slot.received_bytes += payload_len;
-        slot.last_update = std::chrono::steady_clock::now();
+        for (uint32_t i = offset; i < end; ++i) {
+            if (slot.received_mask[i] == 0) {
+                slot.received_mask[i] = 1;
+                slot.received_bytes++;
+            }
+        }
+        slot.last_update = receive_time;
 
         if (payload_len < MAX_PAYLOAD) {
             slot.size_known     = true;
@@ -81,6 +90,8 @@ void FrameAssembler::push_chunk(const CamHeader& hdr,
             frame.width        = slot.width;
             frame.height       = slot.height;
             frame.timestamp_ms = slot.timestamp_ms;
+            frame.assembly_ms = std::chrono::duration<double, std::milli>(
+                slot.last_update - slot.first_update).count();
             frame.data         = std::move(slot.buffer);
             slots_.erase(key);
             stats_.frames_completed++;

@@ -53,10 +53,10 @@ def generate_launch_description():
 
     yolo_detector_eo_node = Node(
         package='yolo_detector_pkg',
-        executable='yolo_detector_node',
+        executable='ultralytics_yolo_node',
         name='yolo_detector_eo_node',
         output='screen',
-        parameters=[_config('yolo_detector_eo.yaml')],
+        parameters=[_config('ultralytics_yolo_eo.yaml')],
         condition=IfCondition(enable_yolo_eo),
     )
 

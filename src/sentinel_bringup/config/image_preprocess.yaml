@@ -19,3 +19,5 @@ image_preprocess_node:
     camera_cx: 594.894793
     camera_cy: 301.901165
     dist_coeffs: [-0.396147, 0.327762, 0.013861, 0.011281, -0.350658]
+    latency_log_path: "/ros2_ws/log/latency_image_preprocess.csv"
+    latency_log_every_n: 1

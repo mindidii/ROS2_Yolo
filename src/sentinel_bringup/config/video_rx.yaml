@@ -24,3 +24,5 @@ video_rx_node2:
     ir_rotate_ccw_90: true
 
     stale_ms: 2000
+    latency_log_path: "/ros2_ws/log/latency_video_rx.csv"
+    latency_log_every_n: 1

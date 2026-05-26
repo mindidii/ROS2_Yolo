@@ -17,6 +17,7 @@ struct AssembledFrame {
     uint16_t width;
     uint16_t height;
     uint64_t timestamp_ms;
+    double assembly_ms;
     std::vector<uint8_t> data;   // 완전한 프레임 raw bytes
 };
 
@@ -65,6 +66,8 @@ private:
         uint32_t expected_bytes = 0;   // 첫 청크 수신 후 결정
         bool     size_known = false;
         std::vector<uint8_t> buffer;
+        std::vector<uint8_t> received_mask;
+        std::chrono::steady_clock::time_point first_update;
         std::chrono::steady_clock::time_point last_update;
     };
 

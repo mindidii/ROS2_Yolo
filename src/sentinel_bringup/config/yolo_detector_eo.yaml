@@ -1,6 +1,6 @@
 yolo_detector_eo_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11s.engine"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11s.pt"
     image_topic: "/video/eo/preprocessed"
     frame_info_topic: "/video/eo/preprocessed/frame_info"
     conf_threshold: 0.2

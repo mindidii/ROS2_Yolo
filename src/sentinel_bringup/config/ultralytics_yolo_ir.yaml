@@ -16,3 +16,5 @@ yolo_detector_ir_node:
     frame_info_cache_size: 60
     allowed_class_ids: "0"
     class_filter: "person"
+    latency_log_path: "/ros2_ws/log/latency_yolo_ir.csv"
+    latency_log_every_n: 1

@@ -7,7 +7,7 @@ ROS 2 Jazzy workspace for video reception and YOLO-based object detection.
 - `video_rx_pkg2`
   - Receives video frames and publishes ROS topics.
 - `yolo_detector_pkg`
-  - Runs ONNX-based YOLO inference and publishes detection results.
+  - Runs Ultralytics `.pt` YOLO inference and publishes detection results.
 - `sentinel_interfaces`
   - Custom messages and services used by the workspace.
 - `sentinel_bringup`
@@ -20,7 +20,7 @@ ROS 2 Jazzy workspace for video reception and YOLO-based object detection.
 - Ubuntu with ROS 2 Jazzy installed
 - Python 3.12
 - `cv_bridge`
-- `onnxruntime`
+- `ultralytics`
 - `numpy`
 - `opencv-python` or system OpenCV bindings
 
@@ -45,11 +45,12 @@ source /ros2_ws/install/setup.bash
 
 ## YOLO Model
 
-The detector expects an ONNX model file.
+The Ultralytics detector expects a PyTorch `.pt` model file.
 
-Recommended example:
+Recommended examples:
 
-- `/ros2_ws/src/yolo_detector_pkg/model/anti.onnx`
+- `/ros2_ws/src/yolo_detector_pkg/model/best2.pt`
+- `/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt`
 
 If your model is stored somewhere else, pass it with the `model_path` parameter when running the node.
 
@@ -67,7 +68,7 @@ Start the node or launch file that publishes:
 ```bash
 source /opt/ros/jazzy/setup.bash
 source /ros2_ws/install/setup.bash
-ros2 run yolo_detector_pkg yolo_detector_node --ros-args -p model_path:=/ros2_ws/src/yolo_detector_pkg/model/anti.onnx
+ros2 run yolo_detector_pkg ultralytics_yolo_node --ros-args -p model_path:=/ros2_ws/src/yolo_detector_pkg/model/best2.pt
 ```
 
 ## Topics
@@ -142,9 +143,9 @@ If `Publisher count: 0`, the YOLO node has no input image, so it cannot publish 
 
 Check:
 
-- the ONNX file path is correct
+- the `.pt` model file path is correct
 - the model file exists
-- `onnxruntime` is installed in the Python environment used by `ros2 run`
+- `ultralytics` is installed in the Python environment used by `ros2 run`
 
 ## Git Notes
 
@@ -154,7 +155,6 @@ This repository ignores generated files and large model artifacts through `.giti
 - `install/`
 - `log/`
 - `__pycache__/`
-- `*.onnx`
 - `*.pt`
 
 If you want to version large model files, use Git LFS instead of normal Git tracking.

@@ -1,6 +1,6 @@
 yolo_detector_ir_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/ir_detect.engine"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt"
     image_topic: "/camera/ir"
     frame_info_topic: "/camera/ir/frame_info"
     conf_threshold: 0.2
