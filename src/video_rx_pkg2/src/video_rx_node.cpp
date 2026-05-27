@@ -21,6 +21,9 @@
 #include "sentinel_interfaces/msg/frame_info.hpp"
 #include "std_msgs/msg/header.hpp"
 
+#include "sentinel_interfaces/msg/frame_info.hpp"
+#include "sentinel_interfaces/msg/frame_size.hpp"   // ← 추가
+
 class VideoRxNode : public rclcpp::Node
 {
 public:
@@ -67,6 +70,8 @@ public:
             get_parameter("eo_publish_topic").as_string(), 10);
         eo_frame_info_pub_ = create_publisher<sentinel_interfaces::msg::FrameInfo>(
             get_parameter("eo_frame_info_topic").as_string(), 10);
+        
+        eo_frame_size_pub_ = create_publisher<sentinel_interfaces::msg::FrameSize>("/driver/eo/frame_size", 10);
 
         ir_pipeline_.udp_port = static_cast<uint16_t>(get_parameter("ir_udp_port").as_int());
         ir_pipeline_.camera_id = static_cast<uint8_t>(get_parameter("ir_camera_id").as_int());
@@ -238,6 +243,11 @@ private:
             info_msg.fps = static_cast<float>(eo_current_fps_.load());
             info_msg.source = eo_source_name_;
             eo_frame_info_pub_->publish(info_msg);
+            
+            sentinel_interfaces::msg::FrameSize size_msg;
+            size_msg.frame_w = static_cast<uint16_t>(frame.cols);
+            size_msg.frame_h = static_cast<uint16_t>(frame.rows);
+            eo_frame_size_pub_->publish(size_msg);
 
             const uint32_t frame_count = eo_published_frames_.fetch_add(1) + 1;
             const auto publish_done = std::chrono::steady_clock::now();
@@ -319,6 +329,11 @@ private:
                 : ir_pipeline_.expected_fps);
         info_msg.source = ir_pipeline_.source_name;
         ir_pipeline_.frame_info_pub->publish(info_msg);
+        
+        sentinel_interfaces::msg::FrameSize ir_size_msg;
+        ir_size_msg.frame_w = static_cast<uint16_t>(image.cols);
+        ir_size_msg.frame_h = static_cast<uint16_t>(image.rows);
+        ir_frame_size_pub_->publish(ir_size_msg);
 
         const uint32_t frame_count = ir_pipeline_.published_frames.fetch_add(1) + 1;
         const auto publish_done = std::chrono::steady_clock::now();
@@ -412,6 +427,8 @@ private:
         p.image_pub = create_publisher<sensor_msgs::msg::Image>(p.publish_topic, 10);
         p.frame_info_pub = create_publisher<sentinel_interfaces::msg::FrameInfo>(
             p.frame_info_topic, 10);
+
+        ir_frame_size_pub_ = create_publisher<sentinel_interfaces::msg::FrameSize>("/driver/ir/frame_size", 10);
     }
 
     void on_status_timer()
@@ -448,6 +465,8 @@ private:
     rclcpp::Time eo_last_fps_time_{0, 0, RCL_SYSTEM_TIME};
     rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr eo_image_pub_;
     rclcpp::Publisher<sentinel_interfaces::msg::FrameInfo>::SharedPtr eo_frame_info_pub_;
+    rclcpp::Publisher<sentinel_interfaces::msg::FrameSize>::SharedPtr eo_frame_size_pub_;    // ← 추가
+    rclcpp::Publisher<sentinel_interfaces::msg::FrameSize>::SharedPtr ir_frame_size_pub_;    // ← 추가
 
     IrPipeline ir_pipeline_;
     bool ir_rotate_ccw_90_{false};

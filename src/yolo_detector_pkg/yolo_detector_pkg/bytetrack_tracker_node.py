@@ -1,61 +1,40 @@
-from dataclasses import dataclass, field
+from argparse import Namespace
+
+import numpy as np
 
 import rclpy
-from rclpy.node import Node
 from rclpy.executors import ExternalShutdownException
+from rclpy.node import Node
 
 from sentinel_interfaces.msg import Detection2DArray
 from sentinel_interfaces.msg import TrackedDetection2D
 from sentinel_interfaces.msg import TrackedDetection2DArray
 
-
-@dataclass
-class Track:
-    track_id: int
-    bbox: tuple[float, float, float, float]
-    score: float
-    class_id: int
-    class_name: str
-    age: int = 1
-    hits: int = 1
-    missed: int = 0
-    confirmed: bool = False
-    velocity: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
-    class_votes: dict[int, tuple[str, float]] = field(default_factory=dict)
-
-    def predicted_bbox(self):
-        return tuple(self.bbox[i] + self.velocity[i] for i in range(4))
-
-    def update(self, detection):
-        old_bbox = self.bbox
-        self.bbox = detection.bbox
-        self.velocity = tuple(self.bbox[i] - old_bbox[i] for i in range(4))
-        self.score = detection.score
-        self.age += 1
-        self.hits += 1
-        self.missed = 0
-        _, previous_score = self.class_votes.get(detection.class_id, (detection.class_name, 0.0))
-        self.class_votes[detection.class_id] = (
-            detection.class_name,
-            previous_score + max(detection.score, 0.01),
-        )
-        self.class_id, (self.class_name, _) = max(
-            self.class_votes.items(),
-            key=lambda item: item[1][1],
-        )
-
-    def mark_missed(self):
-        self.bbox = self.predicted_bbox()
-        self.age += 1
-        self.missed += 1
+from ultralytics.trackers.byte_tracker import BYTETracker
 
 
-@dataclass(frozen=True)
-class Detection:
-    bbox: tuple[float, float, float, float]
-    score: float
-    class_id: int
-    class_name: str
+class ByteTrackDetections:
+    def __init__(self, xyxy, conf, cls):
+        self.xyxy = np.asarray(xyxy, dtype=np.float32).reshape(-1, 4)
+        self.conf = np.asarray(conf, dtype=np.float32)
+        self.cls = np.asarray(cls, dtype=np.float32)
+
+    def __len__(self):
+        return int(self.conf.shape[0])
+
+    def __getitem__(self, index):
+        return ByteTrackDetections(self.xyxy[index], self.conf[index], self.cls[index])
+
+    @property
+    def xywh(self):
+        if len(self) == 0:
+            return np.empty((0, 4), dtype=np.float32)
+        xywh = self.xyxy.copy()
+        xywh[:, 0] = (self.xyxy[:, 0] + self.xyxy[:, 2]) * 0.5
+        xywh[:, 1] = (self.xyxy[:, 1] + self.xyxy[:, 3]) * 0.5
+        xywh[:, 2] = self.xyxy[:, 2] - self.xyxy[:, 0]
+        xywh[:, 3] = self.xyxy[:, 3] - self.xyxy[:, 1]
+        return xywh
 
 
 class ByteTrackTrackerNode(Node):
@@ -71,6 +50,7 @@ class ByteTrackTrackerNode(Node):
         self.declare_parameter('track_buffer_frames', 30)
         self.declare_parameter('min_confirm_hits', 2)
         self.declare_parameter('class_aware_matching', False)
+        self.declare_parameter('fuse_score', True)
 
         self.detection_topic = (
             self.get_parameter('detection_topic').get_parameter_value().string_value
@@ -101,9 +81,12 @@ class ByteTrackTrackerNode(Node):
         self.class_aware_matching = (
             self.get_parameter('class_aware_matching').get_parameter_value().bool_value
         )
+        self.fuse_score = self.get_parameter('fuse_score').get_parameter_value().bool_value
 
-        self.next_track_id = 1
-        self.tracks: list[Track] = []
+        self.tracker = BYTETracker(self._tracker_args())
+        self.class_names: dict[int, str] = {}
+        self.internal_to_external_id: dict[int, int] = {}
+        self.available_external_ids = list(range(1, 255))
 
         self.pub = self.create_publisher(TrackedDetection2DArray, self.tracks_topic, 10)
         self.sub = self.create_subscription(
@@ -114,154 +97,103 @@ class ByteTrackTrackerNode(Node):
         )
 
         self.get_logger().info(
-            f'ByteTrack-style tracker started: {self.detection_topic} -> {self.tracks_topic}'
+            f'ByteTrack tracker started: {self.detection_topic} -> {self.tracks_topic}'
+        )
+
+    def _tracker_args(self):
+        # Ultralytics BYTETracker uses distance thresholds, so IoU 0.30 becomes
+        # a matching distance threshold of 0.70.
+        return Namespace(
+            track_high_thresh=self.high_score_threshold,
+            track_low_thresh=self.low_score_threshold,
+            new_track_thresh=self.high_score_threshold,
+            track_buffer=self.track_buffer_frames,
+            match_thresh=1.0 - self.match_iou_threshold,
+            fuse_score=self.fuse_score,
         )
 
     def on_detections(self, msg):
-        detections = self._valid_detections(msg.detections)
-        high_detections = [d for d in detections if d.score >= self.high_score_threshold]
-        low_detections = [
-            d for d in detections
-            if self.low_score_threshold <= d.score < self.high_score_threshold
-        ]
+        detections = self._to_bytetrack_detections(msg.detections)
+        tracks = self.tracker.update(detections)
+        self._release_removed_external_ids()
+        self._publish_tracks(msg, tracks)
 
-        unmatched_tracks, unmatched_high = self._match_and_update(
-            list(range(len(self.tracks))),
-            high_detections,
-            self.match_iou_threshold,
-        )
-        unmatched_tracks, _ = self._match_and_update(
-            unmatched_tracks,
-            low_detections,
-            self.low_match_iou_threshold,
-        )
-
-        for track_index in unmatched_tracks:
-            self.tracks[track_index].mark_missed()
-
-        for det_index in unmatched_high:
-            self._start_track(high_detections[det_index])
-
-        self.tracks = [
-            track for track in self.tracks
-            if track.missed <= self.track_buffer_frames
-        ]
-        for track in self.tracks:
-            if track.hits >= self.min_confirm_hits:
-                track.confirmed = True
-
-        self._publish_tracks(msg)
-
-    def _valid_detections(self, detections):
-        valid = []
+    def _to_bytetrack_detections(self, detections):
+        boxes = []
+        scores = []
+        classes = []
         for det in detections:
-            bbox = (float(det.x1), float(det.y1), float(det.x2), float(det.y2))
-            if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+            x1 = float(det.x1)
+            y1 = float(det.y1)
+            x2 = float(det.x2)
+            y2 = float(det.y2)
+            if x2 <= x1 or y2 <= y1:
                 continue
-            valid.append(
-                Detection(
-                    bbox=bbox,
-                    score=float(det.score),
-                    class_id=int(det.class_id),
-                    class_name=str(det.class_name),
-                )
-            )
-        return valid
-
-    def _match_and_update(self, track_indices, detections, iou_threshold):
-        if not track_indices or not detections:
-            return track_indices, list(range(len(detections)))
-
-        candidate_pairs = []
-        for track_index in track_indices:
-            track = self.tracks[track_index]
-            track_bbox = track.predicted_bbox()
-            for det_index, detection in enumerate(detections):
-                if self.class_aware_matching and detection.class_id != track.class_id:
-                    continue
-                iou = self._iou(track_bbox, detection.bbox)
-                if iou >= iou_threshold:
-                    candidate_pairs.append((iou, track_index, det_index))
-
-        candidate_pairs.sort(reverse=True, key=lambda item: item[0])
-        matched_tracks = set()
-        matched_detections = set()
-
-        for _, track_index, det_index in candidate_pairs:
-            if track_index in matched_tracks or det_index in matched_detections:
+            score = float(det.score)
+            if score < self.low_score_threshold:
                 continue
-            self.tracks[track_index].update(detections[det_index])
-            matched_tracks.add(track_index)
-            matched_detections.add(det_index)
+            class_id = int(det.class_id)
+            if self.class_aware_matching:
+                class_id = int(det.class_id)
+            self.class_names[class_id] = str(det.class_name)
+            boxes.append((x1, y1, x2, y2))
+            scores.append(score)
+            classes.append(class_id)
+        return ByteTrackDetections(boxes, scores, classes)
 
-        unmatched_tracks = [
-            track_index for track_index in track_indices
-            if track_index not in matched_tracks
-        ]
-        unmatched_detections = [
-            det_index for det_index in range(len(detections))
-            if det_index not in matched_detections
-        ]
-        return unmatched_tracks, unmatched_detections
-
-    def _start_track(self, detection):
-        track = Track(
-            track_id=self.next_track_id,
-            bbox=detection.bbox,
-            score=detection.score,
-            class_id=detection.class_id,
-            class_name=detection.class_name,
-            class_votes={
-                detection.class_id: (detection.class_name, max(detection.score, 0.01))
-            },
-        )
-        if self.min_confirm_hits <= 1:
-            track.confirmed = True
-        self.next_track_id += 1
-        self.tracks.append(track)
-
-    def _publish_tracks(self, source_msg):
+    def _publish_tracks(self, source_msg, tracks):
         msg = TrackedDetection2DArray()
         msg.stamp = source_msg.stamp
         msg.frame_id = source_msg.frame_id
 
-        for track in self.tracks:
-            if not track.confirmed or track.missed > 0:
+        for track in tracks:
+            if len(track) < 7:
                 continue
+            x1, y1, x2, y2 = (float(v) for v in track[:4])
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            internal_id = int(track[4])
+            external_id = self._external_track_id(internal_id)
+            if external_id is None:
+                continue
+
+            class_id = int(track[6])
             out = TrackedDetection2D()
-            out.track_id = int(track.track_id)
-            out.class_id = int(track.class_id)
-            out.class_name = str(track.class_name)
-            out.score = float(track.score)
-            out.x1 = float(track.bbox[0])
-            out.y1 = float(track.bbox[1])
-            out.x2 = float(track.bbox[2])
-            out.y2 = float(track.bbox[3])
+            out.track_id = int(external_id)
+            out.class_id = class_id
+            out.class_name = self.class_names.get(class_id, str(class_id))
+            out.score = float(track[5])
+            out.x1 = x1
+            out.y1 = y1
+            out.x2 = x2
+            out.y2 = y2
             msg.tracks.append(out)
 
         self.pub.publish(msg)
 
-    @staticmethod
-    def _iou(box_a, box_b):
-        ax1, ay1, ax2, ay2 = box_a
-        bx1, by1, bx2, by2 = box_b
+    def _external_track_id(self, internal_id):
+        mapped = self.internal_to_external_id.get(internal_id)
+        if mapped is not None:
+            return mapped
+        if not self.available_external_ids:
+            self.get_logger().warning('No free external track IDs in range 1..254')
+            return None
+        external_id = self.available_external_ids.pop(0)
+        self.internal_to_external_id[internal_id] = external_id
+        return external_id
 
-        ix1 = max(ax1, bx1)
-        iy1 = max(ay1, by1)
-        ix2 = min(ax2, bx2)
-        iy2 = min(ay2, by2)
-        iw = max(0.0, ix2 - ix1)
-        ih = max(0.0, iy2 - iy1)
-        intersection = iw * ih
-        if intersection <= 0.0:
-            return 0.0
-
-        area_a = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1)
-        area_b = max(0.0, bx2 - bx1) * max(0.0, by2 - by1)
-        union = area_a + area_b - intersection
-        if union <= 0.0:
-            return 0.0
-        return intersection / union
+    def _release_removed_external_ids(self):
+        live_internal_ids = {
+            int(track.track_id)
+            for track in self.tracker.tracked_stracks + self.tracker.lost_stracks
+        }
+        removed_internal_ids = [
+            internal_id for internal_id in self.internal_to_external_id
+            if internal_id not in live_internal_ids
+        ]
+        for internal_id in removed_internal_ids:
+            self.internal_to_external_id.pop(internal_id)
 
 
 def main(args=None):

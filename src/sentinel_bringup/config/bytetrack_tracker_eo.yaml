@@ -6,6 +6,6 @@ bytetrack_tracker_eo_node:
     low_score_threshold: 0.10
     match_iou_threshold: 0.30
     low_match_iou_threshold: 0.20
-    track_buffer_frames: 30
+    track_buffer_frames: 5
     min_confirm_hits: 2
     class_aware_matching: false

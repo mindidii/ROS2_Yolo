@@ -49,9 +49,10 @@ The Ultralytics detector expects a PyTorch `.pt` model file.
 
 Recommended examples:
 
-- `/ros2_ws/src/yolo_detector_pkg/model/best2.pt`
-- `/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt`
+- `/ros2_ws/src/yolo_detector_pkg/model/best2.pt`  # drone detection
+- `/ros2_ws/src/yolo_detector_pkg/model/yolo11m.pt`  # person detection
 
+The EO launch config now supports dual-model inference in one node: `best2.pt` for drone and `yolo11m.pt` for person.
 If your model is stored somewhere else, pass it with the `model_path` parameter when running the node.
 
 ## Run

@@ -51,12 +51,30 @@ def generate_launch_description():
         condition=IfCondition(enable_yolo_ir),
     )
 
-    yolo_detector_eo_node = Node(
+    yolo_detector_eo_drone_node = Node(
         package='yolo_detector_pkg',
         executable='ultralytics_yolo_node',
-        name='yolo_detector_eo_node',
+        name='yolo_detector_eo_drone_node',
         output='screen',
-        parameters=[_config('ultralytics_yolo_eo.yaml')],
+        parameters=[_config('ultralytics_yolo_eo_drone.yaml')],
+        condition=IfCondition(enable_yolo_eo),
+    )
+
+    yolo_detector_eo_person_node = Node(
+        package='yolo_detector_pkg',
+        executable='ultralytics_yolo_node',
+        name='yolo_detector_eo_person_node',
+        output='screen',
+        parameters=[_config('ultralytics_yolo_eo_person.yaml')],
+        condition=IfCondition(enable_yolo_eo),
+    )
+
+    detection_merge_eo_node = Node(
+        package='yolo_detector_pkg',
+        executable='detection_merge_node',
+        name='detection_merge_eo_node',
+        output='screen',
+        parameters=[_config('detection_merge_eo.yaml')],
         condition=IfCondition(enable_yolo_eo),
     )
 
@@ -126,7 +144,9 @@ def generate_launch_description():
         video_rx_node,
         image_preprocess_node,
         yolo_detector_ir_node,
-        yolo_detector_eo_node,
+        yolo_detector_eo_drone_node,
+        yolo_detector_eo_person_node,
+        detection_merge_eo_node,
         bytetrack_tracker_ir_node,
         bytetrack_tracker_eo_node,
         track_selector_node,

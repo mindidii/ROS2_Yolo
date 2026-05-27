@@ -1,0 +1,9 @@
+detection_merge_eo_node:
+  ros__parameters:
+    first_detection_topic: "/detections/eo/drone"
+    second_detection_topic: "/detections/eo/person"
+    merged_detection_topic: "/detections/eo"
+    publish_policy: "first_immediate_with_latest_second"
+    max_second_age_ms: 250.0
+    cache_size: 30
+    log_period_sec: 2.0

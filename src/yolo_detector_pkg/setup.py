@@ -14,6 +14,7 @@ setup(
     scripts=[
         'scripts/bytetrack_tracker_node',
         'scripts/debug_detection_viewer',
+        'scripts/detection_merge_node',
         'scripts/track_selector_node',
         'scripts/ultralytics_yolo_node',
         'scripts/web_detection_viewer',

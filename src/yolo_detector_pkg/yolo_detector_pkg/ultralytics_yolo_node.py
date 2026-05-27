@@ -18,7 +18,7 @@ class UltralyticsYoloNode(Node):
     def __init__(self):
         super().__init__('ultralytics_yolo_node')
 
-        self.declare_parameter('model_path', '/ros2_ws/src/yolo_detector_pkg/model/best.pt')
+        self.declare_parameter('model_path', '/ros2_ws/src/yolo_detector_pkg/model/best2.pt')
         self.declare_parameter('image_topic', '/video/eo/preprocessed')
         self.declare_parameter('frame_info_topic', '/video/eo/preprocessed/frame_info')
         self.declare_parameter('detection_topic', '/detections/eo')
@@ -30,6 +30,7 @@ class UltralyticsYoloNode(Node):
         self.declare_parameter('max_det', 300)
         self.declare_parameter('enabled', True)
         self.declare_parameter('publish_empty', True)
+        self.declare_parameter('image_queue_size', 1)
         self.declare_parameter('log_period_sec', 2.0)
         self.declare_parameter('frame_info_cache_size', 60)
         self.declare_parameter('allowed_class_ids', '')
@@ -41,6 +42,7 @@ class UltralyticsYoloNode(Node):
         self.declare_parameter('secondary_output_class_id', -1)
         self.declare_parameter('secondary_output_class_name', '')
         self.declare_parameter('dual_model_mode', 'sequential')
+        self.declare_parameter('process_every_n_frames', 1)
         self.declare_parameter('latency_log_path', '')
         self.declare_parameter('latency_log_every_n', 1)
 
@@ -56,6 +58,7 @@ class UltralyticsYoloNode(Node):
         self.max_det = int(self.get_parameter('max_det').value)
         self.enabled = bool(self.get_parameter('enabled').value)
         self.publish_empty = bool(self.get_parameter('publish_empty').value)
+        self.image_queue_size = max(1, int(self.get_parameter('image_queue_size').value))
         self.log_period_sec = float(self.get_parameter('log_period_sec').value)
         self.frame_info_cache_size = int(self.get_parameter('frame_info_cache_size').value)
         self.allowed_class_ids = self._parse_allowed_class_ids(
@@ -74,6 +77,7 @@ class UltralyticsYoloNode(Node):
         self.secondary_class_filter = self._parse_class_filter(
             str(self.get_parameter('secondary_class_filter').value)
         )
+
         self.secondary_predict_classes = (
             sorted(self.secondary_allowed_class_ids)
             if self.secondary_allowed_class_ids is not None else None
@@ -94,6 +98,10 @@ class UltralyticsYoloNode(Node):
                 f'Unsupported dual_model_mode={self.dual_model_mode}; using sequential'
             )
             self.dual_model_mode = 'sequential'
+        self.process_every_n_frames = max(
+            1,
+            int(self.get_parameter('process_every_n_frames').value),
+        )
         self.latency_log_path = str(self.get_parameter('latency_log_path').value).strip()
         self.latency_log_every_n = max(1, int(self.get_parameter('latency_log_every_n').value))
         self.latency_log_file = None
@@ -105,6 +113,7 @@ class UltralyticsYoloNode(Node):
         self.frame_info_by_stamp = OrderedDict()
         self.last_log_time = 0.0
         self.frame_count = 0
+        self.received_frame_count = 0
         self.next_model_index = 0
         self.primary_cached_detections = []
         self.secondary_cached_detections = []
@@ -123,7 +132,7 @@ class UltralyticsYoloNode(Node):
             Image,
             self.image_topic,
             self._on_image,
-            10,
+            self.image_queue_size,
         )
 
         self.get_logger().info('Ultralytics YOLO node started')
@@ -133,7 +142,9 @@ class UltralyticsYoloNode(Node):
         self.get_logger().info(f'detection_topic : {self.detection_topic}')
         self.get_logger().info(
             f'imgsz={self.imgsz} conf={self.conf_threshold} iou={self.iou_threshold} '
-            f'device={self.device} half={self.half}'
+            f'device={self.device} half={self.half} '
+            f'process_every_n_frames={self.process_every_n_frames} '
+            f'image_queue_size={self.image_queue_size}'
         )
         self.get_logger().info(
             f'allowed_class_ids={self.allowed_class_ids} class_filter={sorted(self.class_filter)}'
@@ -181,6 +192,10 @@ class UltralyticsYoloNode(Node):
 
     def _on_image(self, msg: Image):
         if not self.enabled:
+            return
+
+        self.received_frame_count += 1
+        if (self.received_frame_count - 1) % self.process_every_n_frames != 0:
             return
 
         total_start = time.perf_counter()
@@ -459,7 +474,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = UltralyticsYoloNode()
     try:
-        rclpy.spin(node)
+        rclpy.spin(node) # 노드를 실행하면서 callback 처리
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
