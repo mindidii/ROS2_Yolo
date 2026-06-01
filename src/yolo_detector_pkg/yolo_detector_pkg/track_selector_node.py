@@ -1,4 +1,4 @@
-import time  # 추가
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -13,14 +13,13 @@ TRACK_ID_AUTO = 0xFF
 STREAM_EO = 0
 STREAM_IR = 1
 
-LOST_HOLD_SEC = 3.0  # 추가: 트랙 소실 후 대기 시간
+LOST_HOLD_SEC = 3.0
 
 
 class TrackSelectorNode(Node):
     def __init__(self):
         super().__init__('track_selector_node')
 
-        # 기존 파라미터 선언 동일
         self.declare_parameter('tracks_topic', '/tracks/eo')
         self.declare_parameter('tracks_topic_eo', '/tracks/eo')
         self.declare_parameter('tracks_topic_ir', '/tracks/ir')
@@ -29,9 +28,9 @@ class TrackSelectorNode(Node):
         self.declare_parameter('stream_select_topic', '/system/stream_select')
         self.declare_parameter('driver_detection_topic', '/driver/detection')
         self.declare_parameter('auto_select_policy', 'first_detected')
-        self.declare_parameter('lost_hold_sec', LOST_HOLD_SEC)  # 추가
+        self.declare_parameter('lost_hold_sec', LOST_HOLD_SEC)
+        self.declare_parameter('bbox_output_hold_sec', 0.25)
 
-        # 기존 파라미터 읽기 동일
         legacy_tracks_topic = self.get_parameter('tracks_topic').get_parameter_value().string_value
         self.tracks_topic_eo = self.get_parameter('tracks_topic_eo').get_parameter_value().string_value
         self.tracks_topic_ir = self.get_parameter('tracks_topic_ir').get_parameter_value().string_value
@@ -42,11 +41,15 @@ class TrackSelectorNode(Node):
         self.stream_select_topic = self.get_parameter('stream_select_topic').get_parameter_value().string_value
         self.driver_detection_topic = self.get_parameter('driver_detection_topic').get_parameter_value().string_value
         self.auto_select_policy = self.get_parameter('auto_select_policy').get_parameter_value().string_value
-        self.lost_hold_sec = float(  # 추가
+        self.lost_hold_sec = float(
             self.get_parameter('lost_hold_sec').get_parameter_value().double_value
         )
+        self.bbox_output_hold_sec = max(
+            0.0,
+            float(self.get_parameter('bbox_output_hold_sec').get_parameter_value().double_value),
+        )
 
-        # 기존 상태값
+        # 상태값
         self.system_mode = MODE_SCAN
         self.track_enabled = False
         self.selected_stream = STREAM_EO
@@ -55,17 +58,17 @@ class TrackSelectorNode(Node):
         self.latest_tracks = {STREAM_EO: [], STREAM_IR: []}
         self._debug_counter = 0
 
-        # 추가: 트랙 소실 관련 상태
-        self._lost_since = {
-            STREAM_EO: None,  # 소실 시작 시각 (None이면 소실 아님)
-            STREAM_IR: None,
-        }
-        self._is_holding = {
-            STREAM_EO: False,  # 대기 중인지 여부
-            STREAM_IR: False,
-        }
+        # 트랙 소실 관련 상태
+        self._lost_since = {STREAM_EO: None, STREAM_IR: None}
+        self._is_holding = {STREAM_EO: False, STREAM_IR: False}
+        self._last_fresh_selected = {STREAM_EO: None, STREAM_IR: None}
+        self._last_fresh_selected_time = {STREAM_EO: None, STREAM_IR: None}
 
-        # 기존 구독/발행 동일
+        # [제거] motor compensation 관련 파라미터/상태 전부 삭제
+        # current_motor_angle, last_target_state, camera_fx/fy,
+        # pan/tilt 파라미터, motor_reacquire_* 파라미터 모두 제거.
+        # ID 연속성은 bytetrack_tracker_node가 전담한다.
+
         self.tracks_eo_sub = self.create_subscription(
             TrackedDetection2DArray, self.tracks_topic_eo,
             lambda msg: self.on_tracks(msg, STREAM_EO), 10)
@@ -86,11 +89,16 @@ class TrackSelectorNode(Node):
             UInt8, '/system/active_track_id', 10)
 
         self.get_logger().info(
-            f'TrackSelectorNode started: lost_hold_sec={self.lost_hold_sec}s'
+            f'TrackSelectorNode started: lost_hold_sec={self.lost_hold_sec}s '
+            f'bbox_output_hold_sec={self.bbox_output_hold_sec}s'
+        )
+        self.get_logger().info(
+            'ID reacquire 책임: bytetrack_tracker_node 전담 '
+            '(track_selector는 ID를 신뢰하고 추종)'
         )
 
     # =========================================================
-    # 기존 콜백 (변경 없음)
+    # 콜백
     # =========================================================
     def on_system_mode(self, msg):
         mode = int(msg.data)
@@ -153,11 +161,15 @@ class TrackSelectorNode(Node):
             return
         self._publish_selected(
             self.latest_tracks.get(self.selected_stream, []),
-            self.selected_stream
+            self.selected_stream,
         )
 
     # =========================================================
-    # 핵심 수정: _publish_selected
+    # 핵심: _publish_selected
+    # bytetrack_tracker_node가 ID 연속성을 보장하므로
+    # 여기서는 ID를 신뢰하고 추종만 한다.
+    # ID가 사라지면 → hold → 초과 시 추적 중단.
+    # 다른 ID로 임의 전환하는 로직은 없다.
     # =========================================================
     def _publish_selected(self, tracks, stream):
         if not self.track_enabled:
@@ -168,40 +180,67 @@ class TrackSelectorNode(Node):
         if selected is None:
             # ── 트랙 소실 처리 ──
             if not self._is_holding[stream]:
-                # 소실 시작
                 self._lost_since[stream] = time.monotonic()
                 self._is_holding[stream] = True
                 self.get_logger().info(
-                    f'[HOLD] 트랙 소실 감지, {self.lost_hold_sec}초 대기 시작'
+                    f'[HOLD] 트랙 소실 감지 '
+                    f'(stream={self._stream_name(stream)}), '
+                    f'{self.lost_hold_sec}초 대기 시작'
                 )
 
             elapsed = time.monotonic() - self._lost_since[stream]
 
             if elapsed < self.lost_hold_sec:
-                # 대기 중: 발행 중단 (모터 정지 유지)
-                self.get_logger().info(
-                    f'[HOLD] 대기 중 {elapsed:.1f}s / {self.lost_hold_sec}s',
-                )
+                # 대기 중: 발행 중단 → 모터는 마지막 명령 위치 유지
                 return
 
-            # 대기 시간 초과: 새 트랙 탐색 허용
-            self.get_logger().info('[HOLD] 대기 시간 초과, 새 트랙 탐색')
+            # 대기 시간 초과 → 진짜 소실로 확정, 추적 중단
+            self.get_logger().info(
+                f'[HOLD] 대기 시간 초과 '
+                f'(stream={self._stream_name(stream)}), 추적 중단'
+            )
             self._is_holding[stream] = False
             self._lost_since[stream] = None
             self.selected_track_ids[stream] = None
             self._publish_active_track_id(TRACK_ID_AUTO)
             return
 
+        now = time.monotonic()
+        selected_is_fresh = self._track_is_fresh(selected)
+
+        if not selected_is_fresh:
+            if not self._is_holding[stream]:
+                self._lost_since[stream] = now
+                self._is_holding[stream] = True
+                self.get_logger().info(
+                    f'[HOLD] 트랙 stale 상태 진입 '
+                    f'(stream={self._stream_name(stream)}), '
+                    f'{self.lost_hold_sec}초 ID 유지 시작'
+                )
+
+            elapsed = now - self._lost_since[stream]
+            if elapsed >= self.lost_hold_sec:
+                self.get_logger().info(
+                    f'[HOLD] stale 유지 시간 초과 '
+                    f'(stream={self._stream_name(stream)}), 추적 중단'
+                )
+                self._is_holding[stream] = False
+                self._lost_since[stream] = None
+                self.selected_track_ids[stream] = None
+                self._publish_active_track_id(TRACK_ID_AUTO)
+                return
+
         # ── 트랙 재발견 ──
-        if self._is_holding[stream]:
+        if self._is_holding[stream] and selected_is_fresh:
             elapsed = time.monotonic() - self._lost_since[stream]
             self.get_logger().info(
-                f'[HOLD] 트랙 재발견 (소실 후 {elapsed:.1f}s), 추적 재개'
+                f'[HOLD] 트랙 재발견 '
+                f'(stream={self._stream_name(stream)}, '
+                f'소실 후 {elapsed:.1f}s), 추적 재개'
             )
             self._is_holding[stream] = False
             self._lost_since[stream] = None
 
-        # bbox 유효성 검사
         if selected.x2 <= selected.x1 or selected.y2 <= selected.y1:
             self.get_logger().warning(
                 f'[DBG] invalid bbox: ({selected.x1},{selected.y1})'
@@ -209,53 +248,93 @@ class TrackSelectorNode(Node):
             )
             return
 
-        out = Detection()
-        out.cx = float((selected.x1 + selected.x2) / 2.0)
-        out.cy = float((selected.y1 + selected.y2) / 2.0)
-        self.driver_detection_pub.publish(out)
+        if selected_is_fresh:
+            self._last_fresh_selected[stream] = selected
+            self._last_fresh_selected_time[stream] = now
+            self._publish_driver_detection(selected)
+        else:
+            self._publish_driver_detection_if_bbox_hold_active(stream, now)
+
         self._publish_active_track_id(int(selected.track_id))
 
     # =========================================================
-    # 기존 메서드 (변경 없음)
+    # 트랙 선택
     # =========================================================
     def _select_track(self, tracks, stream):
         valid_tracks = [t for t in tracks if 0 <= int(t.track_id) <= 254]
         if not valid_tracks:
             return None
+
+        # 명시적 ID 요청
         if self.requested_track_id != TRACK_ID_AUTO:
             for track in valid_tracks:
                 if int(track.track_id) == self.requested_track_id:
                     self.selected_track_ids[stream] = int(track.track_id)
                     return track
             return None
+
+        # 기존 선택 ID 유지
         selected_track_id = self.selected_track_ids.get(stream)
         if selected_track_id is not None:
             for track in valid_tracks:
                 if int(track.track_id) == selected_track_id:
                     return track
+            # ID가 목록에 없으면 None 반환 → 소실 처리로 넘어감
+            # bytetrack reacquire가 성공했다면 다음 프레임에 같은 ID로 돌아옴
             return None
-        selected = self._auto_select(valid_tracks)
+
+        # 신규 자동 선택
+        fresh_tracks = [t for t in valid_tracks if self._track_is_fresh(t)]
+        if not fresh_tracks:
+            return None
+        selected = self._auto_select(fresh_tracks)
         self.selected_track_ids[stream] = int(selected.track_id)
         return selected
 
     def _auto_select(self, tracks):
         if self.auto_select_policy == 'largest_area':
-            return max(tracks,
-                key=lambda t: max(0.0, float(t.x2-t.x1)) * max(0.0, float(t.y2-t.y1)))
+            return max(
+                tracks,
+                key=lambda t: max(0.0, float(t.x2 - t.x1)) * max(0.0, float(t.y2 - t.y1)),
+            )
         if self.auto_select_policy == 'highest_score':
             return max(tracks, key=lambda t: float(t.score))
         return tracks[0]
 
+    # =========================================================
+    # 유틸
+    # =========================================================
     def _publish_active_track_id(self, track_id):
         msg = UInt8()
         msg.data = track_id
         self.active_track_id_pub.publish(msg)
 
+    def _publish_driver_detection(self, track):
+        out = Detection()
+        out.cx = float((track.x1 + track.x2) / 2.0)
+        out.cy = float((track.y1 + track.y2) / 2.0)
+        self.driver_detection_pub.publish(out)
+
+    def _publish_driver_detection_if_bbox_hold_active(self, stream, now):
+        last_track = self._last_fresh_selected.get(stream)
+        last_seen = self._last_fresh_selected_time.get(stream)
+        if last_track is None or last_seen is None:
+            return
+        if now - last_seen > self.bbox_output_hold_sec:
+            return
+        self._publish_driver_detection(last_track)
+
     def _clear_selected_track_ids(self):
         self.selected_track_ids = {STREAM_EO: None, STREAM_IR: None}
         self._lost_since = {STREAM_EO: None, STREAM_IR: None}
         self._is_holding = {STREAM_EO: False, STREAM_IR: False}
+        self._last_fresh_selected = {STREAM_EO: None, STREAM_IR: None}
+        self._last_fresh_selected_time = {STREAM_EO: None, STREAM_IR: None}
         self._publish_active_track_id(TRACK_ID_AUTO)
+
+    @staticmethod
+    def _track_is_fresh(track):
+        return float(track.score) >= 0.0
 
     @staticmethod
     def _stream_name(stream):

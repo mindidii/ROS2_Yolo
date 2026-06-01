@@ -1,6 +1,6 @@
 yolo_detector_ir_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/yolo11l.pt"
     image_topic: "/camera/ir"
     frame_info_topic: "/camera/ir/frame_info"
     detection_topic: "/detections/ir"
@@ -16,5 +16,7 @@ yolo_detector_ir_node:
     frame_info_cache_size: 60
     allowed_class_ids: "0"
     class_filter: "person"
+    output_class_id: 0
+    output_class_name: "person"
     latency_log_path: "/ros2_ws/log/latency_yolo_ir.csv"
     latency_log_every_n: 1

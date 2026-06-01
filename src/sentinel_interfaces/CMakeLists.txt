@@ -14,9 +14,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/FrameSize.msg"
   "msg/TrackedDetection2D.msg"
   "msg/TrackedDetection2DArray.msg"
-  "msg/YoloStatus.msg"
-  "srv/SetBoolFlag.srv"
-  "srv/SetThreshold.srv"
+  "msg/MotorAngle.msg"
   DEPENDENCIES builtin_interfaces
 )
 

@@ -7,3 +7,5 @@ track_selector_node:
     stream_select_topic: "/system/stream_select"
     driver_detection_topic: "/driver/detection"
     auto_select_policy: "first_detected"
+    lost_hold_sec: 3.0
+    bbox_output_hold_sec: 0.25

@@ -1,6 +1,6 @@
 yolo_detector_eo_drone_node:
   ros__parameters:
-    model_path: "/ros2_ws/src/yolo_detector_pkg/model/best2.pt"
+    model_path: "/ros2_ws/src/yolo_detector_pkg/model/drone.pt"
     image_topic: "/video/eo/preprocessed"
     frame_info_topic: "/video/eo/preprocessed/frame_info"
     detection_topic: "/detections/eo/drone"
@@ -15,8 +15,10 @@ yolo_detector_eo_drone_node:
     image_queue_size: 1
     log_period_sec: 2.0
     frame_info_cache_size: 60
-    allowed_class_ids: "1"
+    allowed_class_ids: "0"
     class_filter: ""
+    output_class_id: 1
+    output_class_name: "drone"
     secondary_model_path: ""
     secondary_allowed_class_ids: ""
     secondary_class_filter: ""

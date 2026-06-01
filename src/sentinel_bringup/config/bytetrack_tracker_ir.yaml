@@ -6,6 +6,19 @@ bytetrack_tracker_ir_node:
     low_score_threshold: 0.10
     match_iou_threshold: 0.30
     low_match_iou_threshold: 0.20
-    track_buffer_frames: 30
+    track_buffer_frames: 90
     min_confirm_hits: 2
     class_aware_matching: false
+    fuse_score: false
+    motor_angle_topic: "/motor/angle/get"
+    camera_fx: 977.871299
+    camera_fy: 973.856636
+    pan_counts_per_degree: 11.377778
+    tilt_counts_per_degree: 11.377778
+    pan_wrap_counts: 4096.0
+    tilt_wrap_counts: 4096.0
+    pan_pixel_sign: -1.0
+    tilt_pixel_sign: -1.0
+    external_reacquire_window_sec: 3.0
+    external_reacquire_max_distance_px: 120.0
+    external_reacquire_same_class: true

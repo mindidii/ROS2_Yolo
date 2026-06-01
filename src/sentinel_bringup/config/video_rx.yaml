@@ -11,6 +11,8 @@ video_rx_node2:
     eo_frame_id: "camera_eo"
     eo_flip_vertical: true
     eo_flip_horizontal: true
+    eo_reconnect_delay_ms: 1000
+    eo_read_fail_reconnect_count: 30
 
     ir_udp_port: 5001
     ir_camera_id: 2

@@ -18,7 +18,7 @@ class UltralyticsYoloNode(Node):
     def __init__(self):
         super().__init__('ultralytics_yolo_node')
 
-        self.declare_parameter('model_path', '/ros2_ws/src/yolo_detector_pkg/model/best2.pt')
+        self.declare_parameter('model_path', '/ros2_ws/src/yolo_detector_pkg/model/drone.pt')
         self.declare_parameter('image_topic', '/video/eo/preprocessed')
         self.declare_parameter('frame_info_topic', '/video/eo/preprocessed/frame_info')
         self.declare_parameter('detection_topic', '/detections/eo')
@@ -35,6 +35,8 @@ class UltralyticsYoloNode(Node):
         self.declare_parameter('frame_info_cache_size', 60)
         self.declare_parameter('allowed_class_ids', '')
         self.declare_parameter('class_filter', '')
+        self.declare_parameter('output_class_id', -1)
+        self.declare_parameter('output_class_name', '')
         self.declare_parameter('secondary_model_path', '')
         self.declare_parameter('secondary_allowed_class_ids', '')
         self.declare_parameter('secondary_class_filter', '')
@@ -70,6 +72,8 @@ class UltralyticsYoloNode(Node):
         self.predict_classes = (
             sorted(self.allowed_class_ids) if self.allowed_class_ids is not None else None
         )
+        self.output_class_id = int(self.get_parameter('output_class_id').value)
+        self.output_class_name = str(self.get_parameter('output_class_name').value).strip()
         self.secondary_model_path = str(self.get_parameter('secondary_model_path').value).strip()
         self.secondary_allowed_class_ids = self._parse_allowed_class_ids(
             str(self.get_parameter('secondary_allowed_class_ids').value)
@@ -147,7 +151,8 @@ class UltralyticsYoloNode(Node):
             f'image_queue_size={self.image_queue_size}'
         )
         self.get_logger().info(
-            f'allowed_class_ids={self.allowed_class_ids} class_filter={sorted(self.class_filter)}'
+            f'allowed_class_ids={self.allowed_class_ids} class_filter={sorted(self.class_filter)} '
+            f'output_class=({self.output_class_id}, {self.output_class_name})'
         )
         if self.secondary_model is not None:
             self.get_logger().info(
@@ -273,6 +278,8 @@ class UltralyticsYoloNode(Node):
             results,
             allowed_class_ids=self.allowed_class_ids,
             class_filter=self.class_filter,
+            output_class_id=self.output_class_id,
+            output_class_name=self.output_class_name,
         )
 
     def _predict_secondary(self, cv_image):

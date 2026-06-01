@@ -2,10 +2,26 @@ bytetrack_tracker_eo_node:
   ros__parameters:
     detection_topic: "/detections/eo"
     tracks_topic: "/tracks/eo"
-    high_score_threshold: 0.35
-    low_score_threshold: 0.10
-    match_iou_threshold: 0.30
+    high_score_threshold: 0.25
+    low_score_threshold: 0.05
+    match_iou_threshold: 0.10
     low_match_iou_threshold: 0.20
-    track_buffer_frames: 5
+    track_buffer_frames: 90
     min_confirm_hits: 2
     class_aware_matching: false
+    fuse_score: false
+    motor_angle_topic: "/motor/angle/get"
+    camera_fx: 977.871299
+    camera_fy: 973.856636
+    pan_counts_per_degree: 11.377778
+    tilt_counts_per_degree: 11.377778
+    pan_wrap_counts: 4096.0
+    tilt_wrap_counts: 4096.0
+    pan_pixel_sign: -1.0
+    tilt_pixel_sign: -1.0
+    external_reacquire_window_sec: 3.0
+    external_reacquire_max_distance_px: 120.0
+    external_reacquire_same_class: true
+    hold_class_ids: "1"
+    hold_missing_frames: 180
+    hold_missing_sec: 3.0

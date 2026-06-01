@@ -41,6 +41,8 @@ public:
         declare_parameter<std::string>("eo_frame_id", "camera_eo");
         declare_parameter<bool>("eo_flip_vertical", false);
         declare_parameter<bool>("eo_flip_horizontal", false);
+        declare_parameter<int>("eo_reconnect_delay_ms", 1000);
+        declare_parameter<int>("eo_read_fail_reconnect_count", 30);
 
         declare_parameter<int>("ir_udp_port", 5001);
         declare_parameter<int>("ir_camera_id", static_cast<int>(CAM_ID_IR));
@@ -65,6 +67,10 @@ public:
         eo_ros_frame_id_ = get_parameter("eo_frame_id").as_string();
         eo_flip_vertical_ = get_parameter("eo_flip_vertical").as_bool();
         eo_flip_horizontal_ = get_parameter("eo_flip_horizontal").as_bool();
+        eo_reconnect_delay_ms_ = std::max<int64_t>(
+            100, get_parameter("eo_reconnect_delay_ms").as_int());
+        eo_read_fail_reconnect_count_ = std::max<int64_t>(
+            1, get_parameter("eo_read_fail_reconnect_count").as_int());
 
         eo_image_pub_ = create_publisher<sensor_msgs::msg::Image>(
             get_parameter("eo_publish_topic").as_string(), 10);
@@ -192,77 +198,112 @@ private:
             "video/x-raw,format=BGR ! "
             "appsink drop=true max-buffers=1 sync=false";
 
-        RCLCPP_INFO(get_logger(), "EO: opening GStreamer pipeline: %s", pipeline.c_str());
+        RCLCPP_INFO(get_logger(), "EO: GStreamer pipeline: %s", pipeline.c_str());
 
-        cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
-        RCLCPP_INFO(get_logger(), "EO: VideoCapture open returned");
-        if (!cap.isOpened()) {
-            RCLCPP_ERROR(
-                get_logger(),
-                "EO: failed to open GStreamer pipeline: %s",
-                pipeline.c_str());
-            return;
-        }
-        RCLCPP_INFO(get_logger(), "EO: capture started: %s", pipeline.c_str());
-
-        cv::Mat frame;
         while (eo_running_) {
-            if (!cap.read(frame) || frame.empty()) {
+            RCLCPP_INFO(get_logger(), "EO: opening GStreamer pipeline");
+            cv::VideoCapture cap(pipeline, cv::CAP_GSTREAMER);
+            if (!cap.isOpened()) {
+                RCLCPP_ERROR(
+                    get_logger(),
+                    "EO: failed to open GStreamer pipeline; retrying in %ld ms",
+                    eo_reconnect_delay_ms_);
+                sleep_for_eo_reconnect_delay();
+                continue;
+            }
+
+            RCLCPP_INFO(get_logger(), "EO: capture started");
+
+            cv::Mat frame;
+            int consecutive_failures = 0;
+            while (eo_running_) {
+                if (!cap.read(frame) || frame.empty()) {
+                    consecutive_failures++;
+                    RCLCPP_WARN_THROTTLE(
+                        get_logger(),
+                        *get_clock(),
+                        2000,
+                        "EO: failed to read frame (%d/%ld)",
+                        consecutive_failures,
+                        eo_read_fail_reconnect_count_);
+                    if (consecutive_failures >= eo_read_fail_reconnect_count_) {
+                        RCLCPP_WARN(
+                            get_logger(),
+                            "EO: read failures exceeded threshold; reconnecting");
+                        break;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    continue;
+                }
+                consecutive_failures = 0;
+                const auto read_done = std::chrono::steady_clock::now();
+
+                if (eo_flip_vertical_ && eo_flip_horizontal_) {
+                    cv::flip(frame, frame, -1);
+                } else if (eo_flip_vertical_) {
+                    cv::flip(frame, frame, 0);
+                } else if (eo_flip_horizontal_) {
+                    cv::flip(frame, frame, 1);
+                }
+
+                const rclcpp::Time stamp = now();
+
+                std_msgs::msg::Header header;
+                header.stamp = stamp;
+                header.frame_id = eo_ros_frame_id_;
+
+                auto image_msg = cv_bridge::CvImage(header, "bgr8", frame).toImageMsg();
+                eo_image_pub_->publish(*image_msg);
+
+                update_eo_fps();
+                sentinel_interfaces::msg::FrameInfo info_msg;
+                info_msg.stamp = stamp;
+                info_msg.width = static_cast<uint32_t>(frame.cols);
+                info_msg.height = static_cast<uint32_t>(frame.rows);
+                info_msg.fps = static_cast<float>(eo_current_fps_.load());
+                info_msg.source = eo_source_name_;
+                eo_frame_info_pub_->publish(info_msg);
+                
+                sentinel_interfaces::msg::FrameSize size_msg;
+                size_msg.frame_w = static_cast<uint16_t>(frame.cols);
+                size_msg.frame_h = static_cast<uint16_t>(frame.rows);
+                eo_frame_size_pub_->publish(size_msg);
+
+                const uint32_t frame_count = eo_published_frames_.fetch_add(1) + 1;
+                const auto publish_done = std::chrono::steady_clock::now();
+                log_latency_row(
+                    "video_rx",
+                    "eo",
+                    static_cast<uint32_t>(frame_count),
+                    stamp,
+                    "read_to_publish_ms",
+                    std::chrono::duration<double, std::milli>(publish_done - read_done).count(),
+                    static_cast<double>(frame.cols),
+                    static_cast<double>(frame.rows));
+            }
+
+            cap.release();
+            if (eo_running_) {
                 RCLCPP_WARN_THROTTLE(
                     get_logger(),
                     *get_clock(),
                     2000,
-                    "EO: failed to read frame");
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
-                continue;
+                    "EO: reconnecting after capture interruption");
+                sleep_for_eo_reconnect_delay();
             }
-            const auto read_done = std::chrono::steady_clock::now();
-
-            if (eo_flip_vertical_ && eo_flip_horizontal_) {
-                cv::flip(frame, frame, -1);
-            } else if (eo_flip_vertical_) {
-                cv::flip(frame, frame, 0);
-            } else if (eo_flip_horizontal_) {
-                cv::flip(frame, frame, 1);
-            }
-
-            const rclcpp::Time stamp = now();
-
-            std_msgs::msg::Header header;
-            header.stamp = stamp;
-            header.frame_id = eo_ros_frame_id_;
-
-            auto image_msg = cv_bridge::CvImage(header, "bgr8", frame).toImageMsg();
-            eo_image_pub_->publish(*image_msg);
-
-            update_eo_fps();
-            sentinel_interfaces::msg::FrameInfo info_msg;
-            info_msg.stamp = stamp;
-            info_msg.width = static_cast<uint32_t>(frame.cols);
-            info_msg.height = static_cast<uint32_t>(frame.rows);
-            info_msg.fps = static_cast<float>(eo_current_fps_.load());
-            info_msg.source = eo_source_name_;
-            eo_frame_info_pub_->publish(info_msg);
-            
-            sentinel_interfaces::msg::FrameSize size_msg;
-            size_msg.frame_w = static_cast<uint16_t>(frame.cols);
-            size_msg.frame_h = static_cast<uint16_t>(frame.rows);
-            eo_frame_size_pub_->publish(size_msg);
-
-            const uint32_t frame_count = eo_published_frames_.fetch_add(1) + 1;
-            const auto publish_done = std::chrono::steady_clock::now();
-            log_latency_row(
-                "video_rx",
-                "eo",
-                static_cast<uint32_t>(frame_count),
-                stamp,
-                "read_to_publish_ms",
-                std::chrono::duration<double, std::milli>(publish_done - read_done).count(),
-                static_cast<double>(frame.cols),
-                static_cast<double>(frame.rows));
         }
-        cap.release();
         RCLCPP_INFO(get_logger(), "EO: capture loop stopped");
+    }
+
+    void sleep_for_eo_reconnect_delay()
+    {
+        const auto sleep_step = std::chrono::milliseconds(100);
+        auto remaining = std::chrono::milliseconds(eo_reconnect_delay_ms_);
+        while (eo_running_ && remaining.count() > 0) {
+            const auto step = std::min(remaining, sleep_step);
+            std::this_thread::sleep_for(step);
+            remaining -= step;
+        }
     }
 
     void update_eo_fps()
@@ -457,6 +498,8 @@ private:
     std::string eo_ros_frame_id_;
     bool eo_flip_vertical_{false};
     bool eo_flip_horizontal_{false};
+    int64_t eo_reconnect_delay_ms_{1000};
+    int64_t eo_read_fail_reconnect_count_{30};
     std::atomic<bool> eo_running_{false};
     std::thread eo_thread_;
     std::atomic<uint32_t> eo_published_frames_{0};

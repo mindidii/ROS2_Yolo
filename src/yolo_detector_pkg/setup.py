@@ -13,11 +13,9 @@ setup(
     packages=find_packages(),
     scripts=[
         'scripts/bytetrack_tracker_node',
-        'scripts/debug_detection_viewer',
         'scripts/detection_merge_node',
         'scripts/track_selector_node',
         'scripts/ultralytics_yolo_node',
-        'scripts/web_detection_viewer',
     ],
     data_files=[
         ('share/ament_index/resource_index/packages',

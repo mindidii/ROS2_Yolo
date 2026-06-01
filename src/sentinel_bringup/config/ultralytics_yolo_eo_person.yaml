@@ -17,6 +17,8 @@ yolo_detector_eo_person_node:
     frame_info_cache_size: 60
     allowed_class_ids: "0"
     class_filter: "person"
+    output_class_id: 0
+    output_class_name: "person"
     secondary_model_path: ""
     secondary_allowed_class_ids: ""
     secondary_class_filter: ""

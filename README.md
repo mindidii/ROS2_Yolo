@@ -43,77 +43,46 @@ colcon build --symlink-install
 source /ros2_ws/install/setup.bash
 ```
 
-## YOLO Model
+## YOLO Models
 
-The Ultralytics detector expects a PyTorch `.pt` model file.
+The current launch uses these model files:
 
-Recommended examples:
-
-- `/ros2_ws/src/yolo_detector_pkg/model/best2.pt`  # drone detection
-- `/ros2_ws/src/yolo_detector_pkg/model/yolo11m.pt`  # person detection
-
-The EO launch config now supports dual-model inference in one node: `best2.pt` for drone and `yolo11m.pt` for person.
-If your model is stored somewhere else, pass it with the `model_path` parameter when running the node.
+- `/ros2_ws/src/yolo_detector_pkg/model/drone.pt` for EO drone detection
+- `/ros2_ws/src/yolo_detector_pkg/model/yolo11l.pt` for EO person detection
+- `/ros2_ws/src/yolo_detector_pkg/model/yolo11n.pt` for IR person detection
 
 ## Run
 
-### 1. Start the video publisher
-
-Start the node or launch file that publishes:
-
-- `/video/raw`
-- `/video/frame_info`
-
-### 2. Start the YOLO detector
+Start the full pipeline:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
-ros2 run yolo_detector_pkg ultralytics_yolo_node --ros-args -p model_path:=/ros2_ws/src/yolo_detector_pkg/model/best2.pt
+./run_yolo.sh
 ```
 
 ## Topics
 
 ### Input
 
-- `/video/raw`
+- `/video/eo/preprocessed`
   - `sensor_msgs/msg/Image`
-- `/video/frame_info`
+- `/video/eo/preprocessed/frame_info`
   - `sentinel_interfaces/msg/FrameInfo`
 
 ### Output
 
-- `/detections`
+- `/detections/eo/drone`
+- `/detections/eo/person`
+- `/detections/eo`
+- `/detections/ir`
   - `sentinel_interfaces/msg/Detection2DArray`
-- `/yolo/status`
-  - `sentinel_interfaces/msg/YoloStatus`
-
-## Services
-
-- `/yolo/enable`
-  - `sentinel_interfaces/srv/SetBoolFlag`
-- `/yolo/set_threshold`
-  - `sentinel_interfaces/srv/SetThreshold`
+- `/tracks/eo`
+- `/tracks/ir`
+  - `sentinel_interfaces/msg/TrackedDetection2DArray`
 
 ## Check Detection Results
 
-### Check node status
-
 ```bash
-ros2 topic echo /yolo/status
-```
-
-Expected fields:
-
-- `enabled`
-- `model_loaded`
-- `conf_threshold`
-- `last_error`
-
-### Check detection results
-
-```bash
-ros2 topic echo /detections
+ros2 topic echo /detections/eo
 ```
 
 Example:
@@ -135,7 +104,7 @@ detections:
 Check whether the image input topic exists:
 
 ```bash
-ros2 topic info /video/raw
+ros2 topic info /video/eo/preprocessed
 ```
 
 If `Publisher count: 0`, the YOLO node has no input image, so it cannot publish detections.
