@@ -1,13 +1,27 @@
 import csv
+import math
+import sys
+import threading
 import time
 import traceback
 from collections import OrderedDict
 from pathlib import Path
 
+
+def _prefer_ros_python_dist_packages():
+    ros_python_packages = '/usr/lib/python3/dist-packages'
+    if ros_python_packages in sys.path:
+        sys.path.remove(ros_python_packages)
+        sys.path.insert(0, ros_python_packages)
+
+
+_prefer_ros_python_dist_packages()
+
 import rclpy
 from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Image
 from sentinel_interfaces.msg import Detection2D
 from sentinel_interfaces.msg import Detection2DArray
@@ -44,9 +58,9 @@ class UltralyticsYoloNode(Node):
         self.declare_parameter('secondary_output_class_id', -1)
         self.declare_parameter('secondary_output_class_name', '')
         self.declare_parameter('dual_model_mode', 'sequential')
-        self.declare_parameter('process_every_n_frames', 1)
         self.declare_parameter('latency_log_path', '')
         self.declare_parameter('latency_log_every_n', 1)
+        self.declare_parameter('max_frameinfo_time_diff_ms', 100.0)
 
         self.model_path = self.get_parameter('model_path').value
         self.image_topic = self.get_parameter('image_topic').value
@@ -81,7 +95,6 @@ class UltralyticsYoloNode(Node):
         self.secondary_class_filter = self._parse_class_filter(
             str(self.get_parameter('secondary_class_filter').value)
         )
-
         self.secondary_predict_classes = (
             sorted(self.secondary_allowed_class_ids)
             if self.secondary_allowed_class_ids is not None else None
@@ -102,25 +115,35 @@ class UltralyticsYoloNode(Node):
                 f'Unsupported dual_model_mode={self.dual_model_mode}; using sequential'
             )
             self.dual_model_mode = 'sequential'
-        self.process_every_n_frames = max(
-            1,
-            int(self.get_parameter('process_every_n_frames').value),
-        )
         self.latency_log_path = str(self.get_parameter('latency_log_path').value).strip()
         self.latency_log_every_n = max(1, int(self.get_parameter('latency_log_every_n').value))
         self.latency_log_file = None
         self.latency_log_writer = None
         self.latency_log_counter = 0
+        self.max_frameinfo_time_diff_ns = int(
+            max(0.0, float(self.get_parameter('max_frameinfo_time_diff_ms').value))
+            * 1_000_000
+        )
         self._open_latency_log()
 
         self.bridge = CvBridge()
+        self._frame_info_lock = threading.Lock()
         self.frame_info_by_stamp = OrderedDict()
         self.last_log_time = 0.0
         self.frame_count = 0
-        self.received_frame_count = 0
         self.next_model_index = 0
         self.primary_cached_detections = []
         self.secondary_cached_detections = []
+
+        # Producer-Consumer: callback stores latest frame, worker thread runs inference
+        self._latest_frame_lock = threading.Lock()
+        self._latest_frame_msg = None
+        self._latest_frame_arrival = None
+        self._new_frame_event = threading.Event()
+        self._worker_running = True
+        self._worker_thread = threading.Thread(
+            target=self._inference_worker, daemon=True, name='yolo_worker'
+        )
 
         self.model = self._load_model(self.model_path)
         self.secondary_model = self._load_secondary_model()
@@ -132,12 +155,17 @@ class UltralyticsYoloNode(Node):
             self._on_frame_info,
             30,
         )
+        image_qos = QoSProfile(
+            depth=self.image_queue_size, reliability=ReliabilityPolicy.BEST_EFFORT
+        )
         self.image_sub = self.create_subscription(
             Image,
             self.image_topic,
             self._on_image,
-            self.image_queue_size,
+            image_qos,
         )
+
+        self._worker_thread.start()
 
         self.get_logger().info('Ultralytics YOLO node started')
         self.get_logger().info(f'model_path      : {self.model_path}')
@@ -147,11 +175,12 @@ class UltralyticsYoloNode(Node):
         self.get_logger().info(
             f'imgsz={self.imgsz} conf={self.conf_threshold} iou={self.iou_threshold} '
             f'device={self.device} half={self.half} '
-            f'process_every_n_frames={self.process_every_n_frames} '
-            f'image_queue_size={self.image_queue_size}'
+            f'image_queue_size={self.image_queue_size} '
+            f'max_frameinfo_time_diff_ms={self.max_frameinfo_time_diff_ns / 1_000_000:.1f}'
         )
         self.get_logger().info(
-            f'allowed_class_ids={self.allowed_class_ids} class_filter={sorted(self.class_filter)} '
+            f'allowed_class_ids={self.allowed_class_ids} '
+            f'class_filter={sorted(self.class_filter)} '
             f'output_class=({self.output_class_id}, {self.output_class_name})'
         )
         if self.secondary_model is not None:
@@ -191,20 +220,38 @@ class UltralyticsYoloNode(Node):
 
     def _on_frame_info(self, msg: FrameInfo):
         stamp_ns = self._stamp_to_ns(msg.stamp)
-        self.frame_info_by_stamp[stamp_ns] = msg
-        while len(self.frame_info_by_stamp) > self.frame_info_cache_size:
-            self.frame_info_by_stamp.popitem(last=False)
+        with self._frame_info_lock:
+            self.frame_info_by_stamp[stamp_ns] = msg
+            while len(self.frame_info_by_stamp) > self.frame_info_cache_size:
+                self.frame_info_by_stamp.popitem(last=False)
 
     def _on_image(self, msg: Image):
         if not self.enabled:
             return
+        # Capture arrival time in callback; store only the latest frame (drop stale frames)
+        arrival = self.get_clock().now()
+        with self._latest_frame_lock:
+            self._latest_frame_msg = msg
+            self._latest_frame_arrival = arrival
+        self._new_frame_event.set()
 
-        self.received_frame_count += 1
-        if (self.received_frame_count - 1) % self.process_every_n_frames != 0:
-            return
+    def _inference_worker(self):
+        while self._worker_running:
+            triggered = self._new_frame_event.wait(timeout=1.0)
+            if not triggered:
+                continue
+            self._new_frame_event.clear()
+            with self._latest_frame_lock:
+                msg = self._latest_frame_msg
+                arrival = self._latest_frame_arrival
+                self._latest_frame_msg = None
+                self._latest_frame_arrival = None
+            if msg is None:
+                continue
+            self._process_image(msg, arrival)
 
+    def _process_image(self, msg: Image, arrival):
         total_start = time.perf_counter()
-        callback_start_ros = self.get_clock().now()
         try:
             convert_start = time.perf_counter()
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -227,7 +274,6 @@ class UltralyticsYoloNode(Node):
             else:
                 detections = self._predict_primary(cv_image)
                 ran_models.append('primary')
-
                 if self.secondary_model is not None:
                     detections.extend(self._predict_secondary(cv_image))
                     ran_models.append('secondary')
@@ -241,21 +287,10 @@ class UltralyticsYoloNode(Node):
 
             self.frame_count += 1
             self._log_latency(
-                len(detections),
-                convert_ms,
-                infer_ms,
-                publish_ms,
-                total_ms,
-                ran_models,
+                len(detections), convert_ms, infer_ms, publish_ms, total_ms, ran_models
             )
             self._write_latency_rows(
-                msg,
-                len(detections),
-                convert_ms,
-                infer_ms,
-                publish_ms,
-                total_ms,
-                callback_start_ros,
+                msg, len(detections), convert_ms, infer_ms, publish_ms, total_ms, arrival
             )
 
         except Exception as exc:
@@ -285,7 +320,6 @@ class UltralyticsYoloNode(Node):
     def _predict_secondary(self, cv_image):
         if self.secondary_model is None:
             return []
-
         results = self.secondary_model.predict(
             source=cv_image,
             imgsz=self.imgsz,
@@ -327,6 +361,10 @@ class UltralyticsYoloNode(Node):
             cls_id = int(box.cls[0].item())
             score = float(box.conf[0].item())
             x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
+            if not all(math.isfinite(v) for v in (x1, y1, x2, y2, score)):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
 
             class_name = str(names.get(cls_id, f'class_{cls_id}'))
             if allowed_class_ids is not None and cls_id not in allowed_class_ids:
@@ -355,10 +393,17 @@ class UltralyticsYoloNode(Node):
 
     def _lookup_frame_id(self, image_msg: Image):
         stamp_ns = self._stamp_to_ns(image_msg.header.stamp)
-        frame_info = self.frame_info_by_stamp.get(stamp_ns)
-        if frame_info is None:
-            return 0
-        return int(frame_info.frame_id)
+        with self._frame_info_lock:
+            if stamp_ns in self.frame_info_by_stamp:
+                return int(self.frame_info_by_stamp[stamp_ns].frame_id)
+            if not self.frame_info_by_stamp:
+                return 0
+            closest_ns = min(
+                self.frame_info_by_stamp.keys(), key=lambda k: abs(k - stamp_ns)
+            )
+            if abs(closest_ns - stamp_ns) > self.max_frameinfo_time_diff_ns:
+                return 0
+            return int(self.frame_info_by_stamp[closest_ns].frame_id)
 
     def _log_latency(self, num_detections, convert_ms, infer_ms, publish_ms, total_ms, ran_models):
         now = time.monotonic()
@@ -408,7 +453,7 @@ class UltralyticsYoloNode(Node):
         infer_ms,
         publish_ms,
         total_ms,
-        callback_start_ros,
+        arrival,
     ):
         if self.latency_log_writer is None:
             return
@@ -418,11 +463,11 @@ class UltralyticsYoloNode(Node):
         self.latency_log_counter += 1
 
         stamp_ns = self._stamp_to_ns(image_msg.header.stamp)
-        now_ns = self.get_clock().now().nanoseconds
+        now_ns = time.time_ns()
         frame_id = self._lookup_frame_id(image_msg)
         stream = 'ir' if '/ir' in self.detection_topic else 'eo'
         capture_to_yolo_start_ms = (
-            (callback_start_ros.nanoseconds - stamp_ns) / 1_000_000.0
+            (arrival.nanoseconds - stamp_ns) / 1_000_000.0
             if stamp_ns > 0 else 0.0
         )
         rows = [
@@ -447,12 +492,14 @@ class UltralyticsYoloNode(Node):
             ])
 
     def destroy_node(self):
+        self._worker_running = False
+        self._new_frame_event.set()
+        self._worker_thread.join(timeout=3.0)
         if self.latency_log_file is not None:
             self.latency_log_file.close()
             self.latency_log_file = None
             self.latency_log_writer = None
         super().destroy_node()
-
 
     @staticmethod
     def _parse_allowed_class_ids(value):
@@ -481,7 +528,7 @@ def main(args=None):
     rclpy.init(args=args)
     node = UltralyticsYoloNode()
     try:
-        rclpy.spin(node) # 노드를 실행하면서 callback 처리
+        rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:

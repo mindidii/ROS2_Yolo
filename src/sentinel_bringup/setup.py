@@ -16,8 +16,8 @@ setup(
         ('share/' + package_name + '/config', [
             'config/video_rx.yaml',
             'config/image_preprocess.yaml',
-            'config/bytetrack_tracker_eo.yaml',
             'config/bytetrack_tracker_ir.yaml',
+            'config/deepsort_tracker_eo.yaml',
             'config/ultralytics_yolo_eo_drone.yaml',
             'config/ultralytics_yolo_eo_person.yaml',
             'config/ultralytics_yolo_ir.yaml',

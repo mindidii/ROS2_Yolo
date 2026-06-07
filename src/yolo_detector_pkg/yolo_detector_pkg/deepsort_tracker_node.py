@@ -1,60 +1,39 @@
-from argparse import Namespace
-from collections import deque
+from collections import OrderedDict, deque
 import math
 import time
 
 import numpy as np
 
 import rclpy
+from cv_bridge import CvBridge
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import Image
+
+from deep_sort_realtime.deepsort_tracker import DeepSort
 
 from sentinel_interfaces.msg import Detection2DArray
 from sentinel_interfaces.msg import MotorAngle
 from sentinel_interfaces.msg import TrackedDetection2D
 from sentinel_interfaces.msg import TrackedDetection2DArray
 
-from ultralytics.trackers.byte_tracker import BYTETracker
 
-
-class ByteTrackDetections:
-    def __init__(self, xyxy, conf, cls):
-        self.xyxy = np.asarray(xyxy, dtype=np.float32).reshape(-1, 4)
-        self.conf = np.asarray(conf, dtype=np.float32)
-        self.cls = np.asarray(cls, dtype=np.float32)
-
-    def __len__(self):
-        return int(self.conf.shape[0])
-
-    def __getitem__(self, index):
-        return ByteTrackDetections(self.xyxy[index], self.conf[index], self.cls[index])
-
-    @property
-    def xywh(self):
-        if len(self) == 0:
-            return np.empty((0, 4), dtype=np.float32)
-        xywh = self.xyxy.copy()
-        xywh[:, 0] = (self.xyxy[:, 0] + self.xyxy[:, 2]) * 0.5
-        xywh[:, 1] = (self.xyxy[:, 1] + self.xyxy[:, 3]) * 0.5
-        xywh[:, 2] = self.xyxy[:, 2] - self.xyxy[:, 0]
-        xywh[:, 3] = self.xyxy[:, 3] - self.xyxy[:, 1]
-        return xywh
-
-
-class ByteTrackTrackerNode(Node):
+class DeepSortTrackerNode(Node):
     def __init__(self):
-        super().__init__('bytetrack_tracker_node')
+        super().__init__('deepsort_tracker_node')
 
-        self.declare_parameter('detection_topic', '/detections')
-        self.declare_parameter('tracks_topic', '/tracks')
-        self.declare_parameter('high_score_threshold', 0.35)
-        self.declare_parameter('low_score_threshold', 0.10)
-        self.declare_parameter('match_iou_threshold', 0.30)
-        self.declare_parameter('low_match_iou_threshold', 0.20)
-        self.declare_parameter('track_buffer_frames', 30)
+        self.declare_parameter('image_topic', '/video/eo/preprocessed')
+        self.declare_parameter('detection_topic', '/detections/eo')
+        self.declare_parameter('tracks_topic', '/tracks/eo')
+        self.declare_parameter('max_age', 30)
+        self.declare_parameter('min_confidence', 0.05)
+        self.declare_parameter('embedder_gpu', True)
+        self.declare_parameter('image_cache_size', 60)
+        self.declare_parameter('image_queue_size', 1)
+        self.declare_parameter('max_frame_time_diff_ms', 100.0)
+        self.declare_parameter('publish_prediction_tracks', False)
         self.declare_parameter('min_confirm_hits', 2)
-        self.declare_parameter('class_aware_matching', False)
-        self.declare_parameter('fuse_score', True)
         self.declare_parameter('motor_angle_topic', '/motor/angle/get')
         self.declare_parameter('camera_fx', 977.871299)
         self.declare_parameter('camera_fy', 973.856636)
@@ -73,138 +52,106 @@ class ByteTrackTrackerNode(Node):
         self.declare_parameter('id_cooldown_sec', 6.0)
         self.declare_parameter('stats_period_sec', 5.0)
 
-        self.detection_topic = (
-            self.get_parameter('detection_topic').get_parameter_value().string_value
+        self.image_topic = self.get_parameter('image_topic').value
+        self.detection_topic = self.get_parameter('detection_topic').value
+        self.tracks_topic = self.get_parameter('tracks_topic').value
+        self.max_age = int(self.get_parameter('max_age').value)
+        self.min_confidence = float(self.get_parameter('min_confidence').value)
+        self.embedder_gpu = bool(self.get_parameter('embedder_gpu').value)
+        self.image_cache_size = int(self.get_parameter('image_cache_size').value)
+        self.image_queue_size = max(1, int(self.get_parameter('image_queue_size').value))
+        self.max_frame_time_diff_ns = int(
+            max(0.0, float(self.get_parameter('max_frame_time_diff_ms').value)) * 1_000_000
         )
-        self.tracks_topic = (
-            self.get_parameter('tracks_topic').get_parameter_value().string_value
+        self.publish_prediction_tracks = bool(
+            self.get_parameter('publish_prediction_tracks').value
         )
-        self.high_score_threshold = float(
-            self.get_parameter('high_score_threshold').get_parameter_value().double_value
-        )
-        self.low_score_threshold = float(
-            self.get_parameter('low_score_threshold').get_parameter_value().double_value
-        )
-        self.match_iou_threshold = float(
-            self.get_parameter('match_iou_threshold').get_parameter_value().double_value
-        )
-        self.low_match_iou_threshold = float(
-            self.get_parameter('low_match_iou_threshold').get_parameter_value().double_value
-        )
-        self.track_buffer_frames = max(
-            1,
-            int(self.get_parameter('track_buffer_frames').get_parameter_value().integer_value),
-        )
-        self.min_confirm_hits = max(
-            1,
-            int(self.get_parameter('min_confirm_hits').get_parameter_value().integer_value),
-        )
-        self.class_aware_matching = (
-            self.get_parameter('class_aware_matching').get_parameter_value().bool_value
-        )
-        self.fuse_score = self.get_parameter('fuse_score').get_parameter_value().bool_value
-        self.motor_angle_topic = (
-            self.get_parameter('motor_angle_topic').get_parameter_value().string_value
-        )
-        self.camera_fx = float(
-            self.get_parameter('camera_fx').get_parameter_value().double_value
-        )
-        self.camera_fy = float(
-            self.get_parameter('camera_fy').get_parameter_value().double_value
-        )
+        self.min_confirm_hits = max(1, int(self.get_parameter('min_confirm_hits').value))
+        self.motor_angle_topic = self.get_parameter('motor_angle_topic').value
+        self.camera_fx = float(self.get_parameter('camera_fx').value)
+        self.camera_fy = float(self.get_parameter('camera_fy').value)
         self.pan_counts_per_degree = max(
-            1.0e-6,
-            float(
-                self.get_parameter('pan_counts_per_degree').get_parameter_value().double_value
-            ),
+            1.0e-6, float(self.get_parameter('pan_counts_per_degree').value)
         )
         self.tilt_counts_per_degree = max(
-            1.0e-6,
-            float(
-                self.get_parameter('tilt_counts_per_degree').get_parameter_value().double_value
-            ),
+            1.0e-6, float(self.get_parameter('tilt_counts_per_degree').value)
         )
-        self.pan_wrap_counts = max(
-            1.0,
-            float(self.get_parameter('pan_wrap_counts').get_parameter_value().double_value),
-        )
-        self.tilt_wrap_counts = max(
-            1.0,
-            float(self.get_parameter('tilt_wrap_counts').get_parameter_value().double_value),
-        )
-        self.pan_pixel_sign = float(
-            self.get_parameter('pan_pixel_sign').get_parameter_value().double_value
-        )
-        self.tilt_pixel_sign = float(
-            self.get_parameter('tilt_pixel_sign').get_parameter_value().double_value
-        )
+        self.pan_wrap_counts = max(1.0, float(self.get_parameter('pan_wrap_counts').value))
+        self.tilt_wrap_counts = max(1.0, float(self.get_parameter('tilt_wrap_counts').value))
+        self.pan_pixel_sign = float(self.get_parameter('pan_pixel_sign').value)
+        self.tilt_pixel_sign = float(self.get_parameter('tilt_pixel_sign').value)
         self.external_reacquire_window_sec = float(
-            self.get_parameter(
-                'external_reacquire_window_sec'
-            ).get_parameter_value().double_value
+            self.get_parameter('external_reacquire_window_sec').value
         )
         self.external_reacquire_max_distance_px = float(
-            self.get_parameter(
-                'external_reacquire_max_distance_px'
-            ).get_parameter_value().double_value
+            self.get_parameter('external_reacquire_max_distance_px').value
         )
-        self.external_reacquire_same_class = (
-            self.get_parameter(
-                'external_reacquire_same_class'
-            ).get_parameter_value().bool_value
+        self.external_reacquire_same_class = bool(
+            self.get_parameter('external_reacquire_same_class').value
         )
         self.hold_class_ids = self._parse_class_ids(
-            self.get_parameter('hold_class_ids').get_parameter_value().string_value
+            self.get_parameter('hold_class_ids').value
         )
         self.hold_missing_frames = max(
-            0,
-            int(self.get_parameter('hold_missing_frames').get_parameter_value().integer_value),
+            0, int(self.get_parameter('hold_missing_frames').value)
         )
         self.hold_missing_sec = max(
-            0.0,
-            float(self.get_parameter('hold_missing_sec').get_parameter_value().double_value),
+            0.0, float(self.get_parameter('hold_missing_sec').value)
         )
         self.id_cooldown_sec = max(
             self.external_reacquire_window_sec + 1.0,
-            float(self.get_parameter('id_cooldown_sec').get_parameter_value().double_value),
+            float(self.get_parameter('id_cooldown_sec').value),
         )
         self.stats_period_sec = max(
-            1.0,
-            float(self.get_parameter('stats_period_sec').get_parameter_value().double_value),
+            1.0, float(self.get_parameter('stats_period_sec').value)
         )
 
-        self.tracker = BYTETracker(self._tracker_args())
+        self.tracker = DeepSort(
+            max_age=self.max_age,
+            n_init=self.min_confirm_hits,
+            embedder_gpu=self.embedder_gpu,
+        )
+
         self.class_names: dict[int, str] = {}
-        self.internal_to_external_id: dict[int, int] = {}
-        self.internal_hit_counts: dict[int, int] = {}
+        self.internal_track_classes: dict[str, int] = {}
+        self.internal_to_external_id: dict[str, int] = {}
         self.external_track_states: dict[int, dict] = {}
         self.held_tracks: dict[int, dict] = {}
         self.current_motor_angle = None
-        # deque for O(1) popleft instead of O(N) pop(0)
         self.available_external_ids: deque = deque(range(1, 255))
-
         self.released_id_cooldown: dict[int, float] = {}
+        self.bridge = CvBridge()
+        self.image_cache: OrderedDict[int, np.ndarray] = OrderedDict()
 
-        # Stats counters
         self._stats_reacquire_count = 0
 
         self.pub = self.create_publisher(TrackedDetection2DArray, self.tracks_topic, 10)
-        self.sub = self.create_subscription(
-            Detection2DArray,
-            self.detection_topic,
-            self.on_detections,
-            10,
+        image_qos = QoSProfile(
+            depth=self.image_queue_size,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+        )
+        self.image_sub = self.create_subscription(
+            Image, self.image_topic, self.on_image, image_qos
+        )
+        self.detection_sub = self.create_subscription(
+            Detection2DArray, self.detection_topic, self.on_detections, 1
         )
         self.motor_angle_sub = self.create_subscription(
-            MotorAngle,
-            self.motor_angle_topic,
-            self.on_motor_angle,
-            10,
+            MotorAngle, self.motor_angle_topic, self.on_motor_angle, 10
         )
         self.create_timer(self.stats_period_sec, self._log_stats)
 
         self.get_logger().info(
-            f'ByteTrack tracker started: {self.detection_topic} -> {self.tracks_topic}'
+            f'DeepSORT tracker started: '
+            f'{self.detection_topic} + {self.image_topic} -> {self.tracks_topic}'
+        )
+        self.get_logger().info(
+            f'max_age={self.max_age} min_confidence={self.min_confidence} '
+            f'min_confirm_hits={self.min_confirm_hits} '
+            f'embedder_gpu={self.embedder_gpu} '
+            f'image_queue_size={self.image_queue_size} '
+            f'max_frame_dt={self.max_frame_time_diff_ns / 1_000_000.0:.1f}ms '
+            f'publish_prediction_tracks={self.publish_prediction_tracks}'
         )
         self.get_logger().info(
             f'External ID reacquire: topic={self.motor_angle_topic} '
@@ -224,19 +171,30 @@ class ByteTrackTrackerNode(Node):
                 f'missing_sec={self.hold_missing_sec:.1f}'
             )
 
-    def _tracker_args(self):
-        return Namespace(
-            track_high_thresh=self.high_score_threshold,
-            track_low_thresh=self.low_score_threshold,
-            new_track_thresh=self.high_score_threshold,
-            track_buffer=self.track_buffer_frames,
-            match_thresh=1.0 - self.match_iou_threshold,
-            fuse_score=self.fuse_score,
-        )
+    def on_image(self, msg: Image):
+        stamp_ns = self._stamp_to_ns(msg.header.stamp)
+        try:
+            cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
+        except Exception as e:
+            self.get_logger().warning(f'imgmsg_to_cv2 failed: {e}')
+            return
+        self.image_cache[stamp_ns] = cv_image
+        while len(self.image_cache) > self.image_cache_size:
+            self.image_cache.popitem(last=False)
 
-    def on_detections(self, msg):
-        detections = self._to_bytetrack_detections(msg.detections)
-        tracks = self.tracker.update(detections)
+    def on_detections(self, msg: Detection2DArray):
+        stamp_ns = self._stamp_to_ns(msg.stamp)
+        frame = self.image_cache.get(stamp_ns)
+        if frame is None:
+            frame = self._find_closest_frame(stamp_ns)
+        if frame is None:
+            self.get_logger().warning(
+                f'No image frame within {self.max_frame_time_diff_ns / 1_000_000:.0f}ms '
+                f'of detection stamp, skipping'
+            )
+            return
+        detections = self._to_deepsort_detections(msg.detections)
+        tracks = self.tracker.update_tracks(detections, frame=frame)
         self._release_removed_external_ids()
         self._flush_cooldown_ids()
         self._publish_tracks(msg, tracks)
@@ -244,15 +202,18 @@ class ByteTrackTrackerNode(Node):
     def on_motor_angle(self, msg):
         self.current_motor_angle = (int(msg.pan), int(msg.tilt))
 
-    def _to_bytetrack_detections(self, detections):
-        boxes = []
-        scores = []
-        classes = []
+    def _find_closest_frame(self, stamp_ns: int):
+        if not self.image_cache:
+            return None
+        closest_ns = min(self.image_cache.keys(), key=lambda k: abs(k - stamp_ns))
+        if abs(closest_ns - stamp_ns) > self.max_frame_time_diff_ns:
+            return None
+        return self.image_cache[closest_ns]
+
+    def _to_deepsort_detections(self, detections):
+        result = []
         for det in detections:
-            x1 = float(det.x1)
-            y1 = float(det.y1)
-            x2 = float(det.x2)
-            y2 = float(det.y2)
+            x1, y1, x2, y2 = float(det.x1), float(det.y1), float(det.x2), float(det.y2)
             if not all(math.isfinite(v) for v in (x1, y1, x2, y2)):
                 continue
             if x2 <= x1 or y2 <= y1:
@@ -260,16 +221,12 @@ class ByteTrackTrackerNode(Node):
             score = float(det.score)
             if not math.isfinite(score):
                 continue
-            if score < self.low_score_threshold:
+            if score < self.min_confidence:
                 continue
             class_id = int(det.class_id)
-            if self.class_aware_matching:
-                class_id = int(det.class_id)
             self.class_names[class_id] = str(det.class_name)
-            boxes.append((x1, y1, x2, y2))
-            scores.append(score)
-            classes.append(class_id)
-        return ByteTrackDetections(boxes, scores, classes)
+            result.append(([x1, y1, x2 - x1, y2 - y1], score, class_id))
+        return result
 
     def _publish_tracks(self, source_msg, tracks):
         msg = TrackedDetection2DArray()
@@ -277,46 +234,40 @@ class ByteTrackTrackerNode(Node):
         msg.frame_id = source_msg.frame_id
         now = time.monotonic()
         active_internal_ids = {
-            int(track[4]) for track in tracks
-            if len(track) >= 7
+            self._track_internal_id(t) for t in tracks if t.is_confirmed()
         }
 
         for track in tracks:
-            if len(track) < 7:
+            if not track.is_confirmed():
                 continue
-            x1, y1, x2, y2 = (float(v) for v in track[:4])
-            score = float(track[5])
-            if not all(math.isfinite(v) for v in (x1, y1, x2, y2, score)):
+            ltrb = self._track_ltrb_for_publish(track)
+            if ltrb is None:
                 continue
-            if x2 <= x1 or y2 <= y1:
+            l, t, r, b = map(float, ltrb)
+            det_conf = float(track.det_conf) if track.det_conf is not None else -1.0
+            if not all(math.isfinite(v) for v in (l, t, r, b, det_conf)):
                 continue
-
-            internal_id = int(track[4])
-            hit_count = self.internal_hit_counts.get(internal_id, 0) + 1
-            self.internal_hit_counts[internal_id] = hit_count
-            if hit_count < self.min_confirm_hits:
+            if r <= l or b <= t:
                 continue
 
+            internal_id = self._track_internal_id(track)
+            class_id = self._track_class_id(track, internal_id)
             external_id = self._external_track_id(
-                internal_id,
-                track,
-                now,
-                active_internal_ids,
+                internal_id, (l, t, r, b), int(class_id), now, active_internal_ids
             )
             if external_id is None:
                 continue
 
-            class_id = int(track[6])
-            self._remember_external_state(external_id, track, now)
+            self._remember_external_state(external_id, (l, t, r, b), int(class_id), now)
             out = TrackedDetection2D()
             out.track_id = int(external_id)
-            out.class_id = class_id
-            out.class_name = self.class_names.get(class_id, str(class_id))
-            out.score = score
-            out.x1 = x1
-            out.y1 = y1
-            out.x2 = x2
-            out.y2 = y2
+            out.class_id = int(class_id)
+            out.class_name = self.class_names.get(int(class_id), str(class_id))
+            out.score = det_conf
+            out.x1 = l
+            out.y1 = t
+            out.x2 = r
+            out.y2 = b
             msg.tracks.append(out)
 
         self._apply_track_hold(msg, now)
@@ -346,12 +297,21 @@ class ByteTrackTrackerNode(Node):
             if remaining <= 0 and now >= expires_at:
                 self.held_tracks.pop(track_id, None)
                 continue
-
             msg.tracks.append(self._copy_track(state['track'], stale=True))
             if remaining > 0:
                 state['remaining'] = remaining - 1
             if state['remaining'] <= 0 and now >= expires_at:
                 self.held_tracks.pop(track_id, None)
+
+    def _track_ltrb_for_publish(self, track):
+        if track.det_conf is not None:
+            ltrb = track.to_ltrb(orig=True, orig_strict=True)
+            if ltrb is not None:
+                return ltrb
+            return track.to_ltrb()
+        if self.publish_prediction_tracks:
+            return track.to_ltrb()
+        return None
 
     @staticmethod
     def _copy_track(track, stale=False):
@@ -369,15 +329,13 @@ class ByteTrackTrackerNode(Node):
         out.y2 = float(track.y2)
         return out
 
-    def _external_track_id(self, internal_id, track, now, active_internal_ids):
+    def _external_track_id(self, internal_id, ltrb, class_id, now, active_internal_ids):
         mapped = self.internal_to_external_id.get(internal_id)
         if mapped is not None:
             return mapped
 
         reacquired = self._reacquire_external_track_id(
-            track,
-            now,
-            active_internal_ids,
+            ltrb, class_id, now, active_internal_ids
         )
         if reacquired is not None:
             self.released_id_cooldown.pop(reacquired, None)
@@ -391,19 +349,18 @@ class ByteTrackTrackerNode(Node):
         self.internal_to_external_id[internal_id] = external_id
         return external_id
 
-    def _reacquire_external_track_id(self, track, now, active_internal_ids):
-        class_id = int(track[6])
-        cx = float((track[0] + track[2]) * 0.5)
-        cy = float((track[1] + track[3]) * 0.5)
+    def _reacquire_external_track_id(self, ltrb, class_id, now, active_internal_ids):
+        l, t, r, b = ltrb
+        cx = float((l + r) * 0.5)
+        cy = float((t + b) * 0.5)
         if not all(math.isfinite(v) for v in (cx, cy)):
             return None
 
         active_external_ids = {
-            external_id
-            for internal_id, external_id in self.internal_to_external_id.items()
-            if internal_id in active_internal_ids
+            eid
+            for iid, eid in self.internal_to_external_id.items()
+            if iid in active_internal_ids
         }
-
         candidate_ids = (
             set(self.external_track_states.keys()) | set(self.released_id_cooldown.keys())
         )
@@ -426,7 +383,7 @@ class ByteTrackTrackerNode(Node):
                 continue
 
             if self.external_reacquire_same_class:
-                if int(state['class_id']) != class_id:
+                if int(state['class_id']) != int(class_id):
                     continue
 
             predicted_cx, predicted_cy = self._motor_compensated_center(state)
@@ -434,7 +391,7 @@ class ByteTrackTrackerNode(Node):
                 continue
             distance = math.hypot(cx - predicted_cx, cy - predicted_cy)
 
-            # Age-penalized score: older candidates are ranked as if farther away
+            # Age-penalized score: older candidates ranked as if farther away
             age_ratio = min(1.0, age / window)
             score = distance * (1.0 + age_ratio)
 
@@ -456,20 +413,21 @@ class ByteTrackTrackerNode(Node):
         return best_external_id
 
     def _remap_external_track_id(self, internal_id, external_id):
-        for old_internal_id, old_external_id in list(self.internal_to_external_id.items()):
-            if old_external_id == external_id:
-                self.internal_to_external_id.pop(old_internal_id)
+        for old_iid, old_eid in list(self.internal_to_external_id.items()):
+            if old_eid == external_id:
+                self.internal_to_external_id.pop(old_iid)
         self.internal_to_external_id[internal_id] = external_id
 
-    def _remember_external_state(self, external_id, track, now):
-        cx = float((track[0] + track[2]) * 0.5)
-        cy = float((track[1] + track[3]) * 0.5)
+    def _remember_external_state(self, external_id, ltrb, class_id, now):
+        l, t, r, b = ltrb
+        cx = float((l + r) * 0.5)
+        cy = float((t + b) * 0.5)
         if not all(math.isfinite(v) for v in (cx, cy)):
             return
         self.external_track_states[external_id] = {
             'cx': cx,
             'cy': cy,
-            'class_id': int(track[6]),
+            'class_id': int(class_id),
             'motor_angle': self.current_motor_angle,
             'last_seen': now,
         }
@@ -481,14 +439,10 @@ class ByteTrackTrackerNode(Node):
         current_pan, current_tilt = self.current_motor_angle
         last_pan, last_tilt = state['motor_angle']
         delta_pan_counts = self._circular_delta(
-            current_pan,
-            last_pan,
-            self.pan_wrap_counts,
+            current_pan, last_pan, self.pan_wrap_counts
         )
         delta_tilt_counts = self._circular_delta(
-            current_tilt,
-            last_tilt,
-            self.tilt_wrap_counts,
+            current_tilt, last_tilt, self.tilt_wrap_counts
         )
         delta_pan_rad = math.radians(delta_pan_counts / self.pan_counts_per_degree)
         delta_tilt_rad = math.radians(delta_tilt_counts / self.tilt_counts_per_degree)
@@ -499,17 +453,17 @@ class ByteTrackTrackerNode(Node):
         return float(state['cx']) + dx, float(state['cy']) + dy
 
     def _release_removed_external_ids(self):
-        live_internal_ids = {
-            int(track.track_id)
-            for track in self.tracker.tracked_stracks + self.tracker.lost_stracks
-        }
-        removed_internal_ids = [
-            internal_id for internal_id in self.internal_to_external_id
-            if internal_id not in live_internal_ids
+        live_internal_ids = self._live_internal_track_ids()
+        if live_internal_ids is None:
+            return
+
+        removed = [
+            iid for iid in self.internal_to_external_id
+            if iid not in live_internal_ids
         ]
         now = time.monotonic()
-        for internal_id in removed_internal_ids:
-            self.internal_hit_counts.pop(internal_id, None)
+        for internal_id in removed:
+            self.internal_track_classes.pop(internal_id, None)
             external_id = self.internal_to_external_id.pop(internal_id)
             if external_id not in self.released_id_cooldown:
                 self.released_id_cooldown[external_id] = now
@@ -529,17 +483,42 @@ class ByteTrackTrackerNode(Node):
                     f'External ID {external_id} returned to pool after cooldown'
                 )
 
+    def _live_internal_track_ids(self):
+        tracker = getattr(self.tracker, 'tracker', None)
+        tracks = getattr(tracker, 'tracks', None)
+        if tracks is None:
+            return None
+        return {
+            self._track_internal_id(track)
+            for track in tracks
+            if not (hasattr(track, 'is_deleted') and track.is_deleted())
+        }
+
+    def _track_class_id(self, track, internal_id):
+        if track.det_class is not None:
+            class_id = int(track.det_class)
+            self.internal_track_classes[internal_id] = class_id
+            return class_id
+        return self.internal_track_classes.get(internal_id, -1)
+
     def _log_stats(self):
         active_tracks = len(self.internal_to_external_id)
-        lost_tracks = len(self.tracker.lost_stracks)
         held_count = len(self.held_tracks)
         cooldown_count = len(self.released_id_cooldown)
         self.get_logger().info(
-            f'ByteTrack stats [{self.tracks_topic}]: '
-            f'active={active_tracks} lost={lost_tracks} '
-            f'held={held_count} cooldown={cooldown_count} '
+            f'DeepSORT stats [{self.tracks_topic}]: '
+            f'active={active_tracks} held={held_count} '
+            f'cooldown={cooldown_count} '
             f'reacquire_total={self._stats_reacquire_count}'
         )
+
+    @staticmethod
+    def _track_internal_id(track):
+        return str(track.track_id)
+
+    @staticmethod
+    def _stamp_to_ns(stamp) -> int:
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
     @staticmethod
     def _circular_delta(current, previous, wrap):
@@ -548,10 +527,9 @@ class ByteTrackTrackerNode(Node):
 
     @staticmethod
     def _parse_class_ids(value):
-        value = value.strip()
+        value = str(value).strip()
         if not value:
             return set()
-
         class_ids = set()
         for item in value.split(','):
             item = item.strip()
@@ -563,7 +541,7 @@ class ByteTrackTrackerNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = ByteTrackTrackerNode()
+    node = DeepSortTrackerNode()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):

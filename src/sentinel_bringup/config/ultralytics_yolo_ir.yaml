@@ -18,5 +18,6 @@ yolo_detector_ir_node:
     class_filter: "person"
     output_class_id: 0
     output_class_name: "person"
+    max_frameinfo_time_diff_ms: 100.0
     latency_log_path: "/ros2_ws/log/latency_yolo_ir.csv"
     latency_log_every_n: 1

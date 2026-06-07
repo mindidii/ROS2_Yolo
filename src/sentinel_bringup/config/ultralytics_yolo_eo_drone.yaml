@@ -1,8 +1,10 @@
 yolo_detector_eo_drone_node:
   ros__parameters:
     model_path: "/ros2_ws/src/yolo_detector_pkg/model/drone.pt"
-    image_topic: "/video/eo/preprocessed"
-    frame_info_topic: "/video/eo/preprocessed/frame_info"
+    image_topic: "/camera/eo"
+    # image_topic: "/camera/eo/raw"
+    # frame_info_topic: "/video/eo/preprocessed/frame_info"
+    frame_info_topic: "/camera/eo/raw/frame_info"
     detection_topic: "/detections/eo/drone"
     conf_threshold: 0.25
     iou_threshold: 0.45
@@ -26,6 +28,6 @@ yolo_detector_eo_drone_node:
     secondary_output_class_id: -1
     secondary_output_class_name: ""
     dual_model_mode: "sequential"
-    process_every_n_frames: 1
+    max_frameinfo_time_diff_ms: 100.0
     latency_log_path: "/ros2_ws/log/latency_yolo_eo_drone.csv"
     latency_log_every_n: 1

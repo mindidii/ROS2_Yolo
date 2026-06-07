@@ -1,3 +1,4 @@
+import math
 import time
 from collections import OrderedDict
 
@@ -18,6 +19,8 @@ class DetectionMergeNode(Node):
         self.declare_parameter('max_second_age_ms', 250.0)
         self.declare_parameter('cache_size', 30)
         self.declare_parameter('log_period_sec', 2.0)
+        self.declare_parameter('max_sync_time_diff_ms', 50.0)
+        self.declare_parameter('max_cache_age_ms', 1000.0)
 
         self.first_detection_topic = self.get_parameter('first_detection_topic').value
         self.second_detection_topic = self.get_parameter('second_detection_topic').value
@@ -26,7 +29,18 @@ class DetectionMergeNode(Node):
         self.max_second_age_ms = float(self.get_parameter('max_second_age_ms').value)
         self.cache_size = max(1, int(self.get_parameter('cache_size').value))
         self.log_period_sec = float(self.get_parameter('log_period_sec').value)
-        if self.publish_policy not in {'synchronized', 'first_immediate_with_latest_second'}:
+        self.max_sync_time_diff_ns = int(
+            max(0.0, float(self.get_parameter('max_sync_time_diff_ms').value)) * 1_000_000
+        )
+        self.max_cache_age_ns = int(
+            max(0.0, float(self.get_parameter('max_cache_age_ms').value)) * 1_000_000
+        )
+
+        if self.publish_policy not in {
+            'synchronized',
+            'first_immediate_with_latest_second',
+            'both_immediate_with_latest_other',
+        }:
             self.get_logger().warn(
                 f'Unsupported publish_policy={self.publish_policy}; using synchronized'
             )
@@ -34,6 +48,7 @@ class DetectionMergeNode(Node):
 
         self.first_by_stamp = OrderedDict()
         self.second_by_stamp = OrderedDict()
+        self.latest_first_msg = None
         self.latest_second_msg = None
         self.last_log_time = 0.0
         self.merge_count = 0
@@ -60,11 +75,17 @@ class DetectionMergeNode(Node):
             'Detection merge node started: '
             f'{self.first_detection_topic} + {self.second_detection_topic} '
             f'-> {self.merged_detection_topic} '
-            f'policy={self.publish_policy} max_second_age_ms={self.max_second_age_ms}'
+            f'policy={self.publish_policy} max_second_age_ms={self.max_second_age_ms} '
+            f'max_sync_time_diff_ms={self.max_sync_time_diff_ns / 1_000_000:.1f} '
+            f'max_cache_age_ms={self.max_cache_age_ns / 1_000_000:.1f}'
         )
 
     def _on_first(self, msg):
-        if self.publish_policy == 'first_immediate_with_latest_second':
+        self.latest_first_msg = msg
+        if self.publish_policy in {
+            'first_immediate_with_latest_second',
+            'both_immediate_with_latest_other',
+        }:
             self._publish_first_with_latest_second(msg)
             return
         self._store_and_try_publish(self.first_by_stamp, self.second_by_stamp, msg)
@@ -73,45 +94,77 @@ class DetectionMergeNode(Node):
         self.latest_second_msg = msg
         if self.publish_policy == 'first_immediate_with_latest_second':
             return
+        if self.publish_policy == 'both_immediate_with_latest_other':
+            self._publish_second_with_latest_first(msg)
+            return
         self._store_and_try_publish(self.second_by_stamp, self.first_by_stamp, msg)
 
     def _store_and_try_publish(self, own_cache, other_cache, msg):
         stamp_ns = self._stamp_to_ns(msg.stamp)
         own_cache[stamp_ns] = msg
         self._trim_cache(own_cache)
+        self._evict_old_cache_entries(own_cache, stamp_ns)
+        self._evict_old_cache_entries(other_cache, stamp_ns)
 
-        other_msg = other_cache.pop(stamp_ns, None)
+        other_stamp_ns, other_msg = self._find_nearest(other_cache, stamp_ns)
         if other_msg is None:
             return
 
-        own_msg = own_cache.pop(stamp_ns)
+        other_cache.pop(other_stamp_ns)
+        own_msg = own_cache.pop(stamp_ns, msg)
         self._publish_merged(own_msg, other_msg)
 
-    def _publish_first_with_latest_second(self, first_msg):
-        second_msg = self._fresh_latest_second(first_msg)
-        self._publish_merged(first_msg, second_msg)
+    def _find_nearest(self, cache, stamp_ns):
+        if not cache:
+            return None, None
+        closest_ns = min(cache.keys(), key=lambda k: abs(k - stamp_ns))
+        if abs(closest_ns - stamp_ns) > self.max_sync_time_diff_ns:
+            return None, None
+        return closest_ns, cache[closest_ns]
 
-    def _fresh_latest_second(self, first_msg):
-        if self.latest_second_msg is None:
+    def _evict_old_cache_entries(self, cache, reference_ns):
+        to_remove = [k for k in cache if reference_ns - k > self.max_cache_age_ns]
+        for k in to_remove:
+            cache.pop(k, None)
+
+    def _publish_first_with_latest_second(self, first_msg):
+        second_msg = self._fresh_latest_msg(first_msg, self.latest_second_msg)
+        self._publish_merged(first_msg, second_msg, first_msg)
+
+    def _publish_second_with_latest_first(self, second_msg):
+        first_msg = self._fresh_latest_msg(second_msg, self.latest_first_msg)
+        self._publish_merged(first_msg, second_msg, second_msg)
+
+    def _fresh_latest_msg(self, trigger_msg, latest_msg):
+        if latest_msg is None:
             return None
 
-        first_stamp_ns = self._stamp_to_ns(first_msg.stamp)
-        second_stamp_ns = self._stamp_to_ns(self.latest_second_msg.stamp)
-        age_ms = abs(first_stamp_ns - second_stamp_ns) / 1_000_000.0
+        trigger_stamp_ns = self._stamp_to_ns(trigger_msg.stamp)
+        latest_stamp_ns = self._stamp_to_ns(latest_msg.stamp)
+        age_ms = abs(trigger_stamp_ns - latest_stamp_ns) / 1_000_000.0
         if age_ms > self.max_second_age_ms:
             return None
-        return self.latest_second_msg
+        return latest_msg
 
-    def _publish_merged(self, first_msg, second_msg):
+    def _publish_merged(self, first_msg, second_msg, stamp_msg=None):
+        stamp_msg = stamp_msg or first_msg or second_msg
+        if stamp_msg is None:
+            return
+
         msg = Detection2DArray()
-        msg.stamp = first_msg.stamp
-        msg.frame_id = first_msg.frame_id
-        second_detections = list(second_msg.detections) if second_msg is not None else []
-        msg.detections = list(first_msg.detections) + second_detections
+        msg.stamp = stamp_msg.stamp
+        msg.frame_id = stamp_msg.frame_id
+        first_detections = (
+            self._valid_detections(first_msg.detections) if first_msg is not None else []
+        )
+        second_detections = (
+            self._valid_detections(second_msg.detections) if second_msg is not None else []
+        )
+        msg.detections = first_detections + second_detections
         self.pub.publish(msg)
 
         self.merge_count += 1
-        self._log_merge(len(first_msg.detections), len(second_detections), len(msg.detections))
+        self._log_merge(len(first_detections), len(second_detections), len(msg.detections))
 
     def _trim_cache(self, cache):
         while len(cache) > self.cache_size:
@@ -127,6 +180,22 @@ class DetectionMergeNode(Node):
             f'merges={self.merge_count} first={first_count} '
             f'second={second_count} total={total_count}'
         )
+
+    @staticmethod
+    def _valid_detections(detections):
+        valid = []
+        for det in detections:
+            x1 = float(det.x1)
+            y1 = float(det.y1)
+            x2 = float(det.x2)
+            y2 = float(det.y2)
+            score = float(det.score)
+            if not all(math.isfinite(v) for v in (x1, y1, x2, y2, score)):
+                continue
+            if x2 <= x1 or y2 <= y1:
+                continue
+            valid.append(det)
+        return valid
 
     @staticmethod
     def _stamp_to_ns(stamp):

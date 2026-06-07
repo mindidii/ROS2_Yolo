@@ -1,0 +1,30 @@
+deepsort_tracker_eo_node:
+  ros__parameters:
+    image_topic: "/camera/eo"
+    detection_topic: "/detections/eo"
+    tracks_topic: "/tracks/eo"
+    max_age: 30                    # track이 detection 없이 유지되는 최대 프레임 수
+    min_confidence: 0.05           # detection 최소 신뢰도 (ByteTrack low_score_threshold와 동일)
+    embedder_gpu: true             # appearance feature 추출에 GPU 사용
+    image_cache_size: 60
+    image_queue_size: 1
+    max_frame_time_diff_ms: 100.0  # detection stamp과 image stamp 허용 최대 차이
+    publish_prediction_tracks: false
+    min_confirm_hits: 2
+    motor_angle_topic: "/motor/angle/get"
+    camera_fx: 977.871299
+    camera_fy: 973.856636
+    pan_counts_per_degree: 11.377778
+    tilt_counts_per_degree: 11.377778
+    pan_wrap_counts: 4096.0
+    tilt_wrap_counts: 4096.0
+    pan_pixel_sign: -1.0
+    tilt_pixel_sign: -1.0
+    external_reacquire_window_sec: 3.0
+    external_reacquire_max_distance_px: 120.0
+    external_reacquire_same_class: true
+    hold_class_ids: "0,1"
+    hold_missing_frames: 180
+    hold_missing_sec: 3.0
+    id_cooldown_sec: 6.0
+    stats_period_sec: 5.0

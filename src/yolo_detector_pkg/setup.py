@@ -12,10 +12,11 @@ setup(
     version='0.0.0',
     packages=find_packages(),
     scripts=[
-        'scripts/bytetrack_tracker_node',
         'scripts/detection_merge_node',
         'scripts/track_selector_node',
         'scripts/ultralytics_yolo_node',
+        'scripts/bytetrack_tracker_node',
+        'scripts/deepsort_tracker_node',
     ],
     data_files=[
         ('share/ament_index/resource_index/packages',

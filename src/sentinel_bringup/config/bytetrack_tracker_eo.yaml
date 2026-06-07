@@ -2,16 +2,16 @@ bytetrack_tracker_eo_node:
   ros__parameters:
     detection_topic: "/detections/eo"
     tracks_topic: "/tracks/eo"
-    high_score_threshold: 0.25
-    low_score_threshold: 0.05
-    match_iou_threshold: 0.10
-    low_match_iou_threshold: 0.20
-    track_buffer_frames: 90
-    min_confirm_hits: 2
+    high_score_threshold: 0.25 # 기존 track이랑 매칭되는 점수
+    low_score_threshold: 0.05  # 낮은 신뢰도 detections까지 사용
+    match_iou_threshold: 0.30 # 기존 track과 detection이 매칭되는 IoU 임계값
+    low_match_iou_threshold: 0.10
+    track_buffer_frames: 180  # track가 사라지기 전에 유지되는 최대 프레임 수
+    min_confirm_hits: 2      # track가 확정되기 위해 필요한 최소 히트 수
     class_aware_matching: false
     fuse_score: false
     motor_angle_topic: "/motor/angle/get"
-    camera_fx: 977.871299
+    camera_fx: 977.871299 # 모터가 이동할 때 픽셀 이동량 계산에 사용되는 카메라의 초점 거리 (x축)
     camera_fy: 973.856636
     pan_counts_per_degree: 11.377778
     tilt_counts_per_degree: 11.377778
@@ -22,6 +22,6 @@ bytetrack_tracker_eo_node:
     external_reacquire_window_sec: 3.0
     external_reacquire_max_distance_px: 120.0
     external_reacquire_same_class: true
-    hold_class_ids: "1"
+    hold_class_ids: "0,1"
     hold_missing_frames: 180
     hold_missing_sec: 3.0

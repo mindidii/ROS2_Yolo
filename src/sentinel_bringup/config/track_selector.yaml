@@ -6,6 +6,8 @@ track_selector_node:
     system_track_id_topic: "/system/track_id"
     stream_select_topic: "/system/stream_select"
     driver_detection_topic: "/driver/detection"
+    frame_info_topic_eo: "/camera/eo/raw/frame_info"
+    frame_info_topic_ir: "/camera/ir/frame_info"
     auto_select_policy: "first_detected"
     lost_hold_sec: 3.0
     bbox_output_hold_sec: 0.25

@@ -87,12 +87,12 @@ def generate_launch_description():
         condition=IfCondition(enable_tracker_ir),
     )
 
-    bytetrack_tracker_eo_node = Node(
+    deepsort_tracker_eo_node = Node(
         package='yolo_detector_pkg',
-        executable='bytetrack_tracker_node',
-        name='bytetrack_tracker_eo_node',
+        executable='deepsort_tracker_node',
+        name='deepsort_tracker_eo_node',
         output='screen',
-        parameters=[_config('bytetrack_tracker_eo.yaml')],
+        parameters=[_config('deepsort_tracker_eo.yaml')],
         condition=IfCondition(enable_tracker_eo),
     )
 
@@ -129,12 +129,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'enable_tracker_ir',
             default_value='true',
-            description='Start IR ByteTrack-style tracker node.',
+            description='Start IR ByteTrack tracker node.',
         ),
         DeclareLaunchArgument(
             'enable_tracker_eo',
             default_value='true',
-            description='Start EO ByteTrack-style tracker node.',
+            description='Start EO ByteTrack tracker node.',
         ),
         DeclareLaunchArgument(
             'enable_track_selector',
@@ -148,6 +148,6 @@ def generate_launch_description():
         yolo_detector_eo_person_node,
         detection_merge_eo_node,
         bytetrack_tracker_ir_node,
-        bytetrack_tracker_eo_node,
+        deepsort_tracker_eo_node,
         track_selector_node,
     ])
