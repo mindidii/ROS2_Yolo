@@ -33,14 +33,14 @@ def generate_launch_description():
         condition=IfCondition(enable_video_rx),
     )
 
-    image_preprocess_node = Node(
-        package='image_preprocess_pkg',
-        executable='image_preprocess_node',
-        name='image_preprocess_node',
-        output='screen',
-        parameters=[_config('image_preprocess.yaml')],
-        condition=IfCondition(enable_preprocess),
-    )
+    # image_preprocess_node = Node(
+    #     package='image_preprocess_pkg',
+    #     executable='image_preprocess_node',
+    #     name='image_preprocess_node',
+    #     output='screen',
+    #     parameters=[_config('image_preprocess.yaml')],
+    #     condition=IfCondition(enable_preprocess),
+    # )
 
     yolo_detector_ir_node = Node(
         package='yolo_detector_pkg',
@@ -87,15 +87,23 @@ def generate_launch_description():
         condition=IfCondition(enable_tracker_ir),
     )
 
-    deepsort_tracker_eo_node = Node(
+    # deepsort_tracker_eo_node = Node(
+    #     package='yolo_detector_pkg',
+    #     executable='deepsort_tracker_node',
+    #     name='deepsort_tracker_eo_node',
+    #     output='screen',
+    #     parameters=[_config('deepsort_tracker_eo.yaml')],
+    #     condition=IfCondition(enable_tracker_eo),
+    # )
+
+    bytetrack_tracker_eo_node = Node(
         package='yolo_detector_pkg',
-        executable='deepsort_tracker_node',
-        name='deepsort_tracker_eo_node',
+        executable='bytetrack_tracker_node',
+        name='bytetrack_tracker_eo_node',
         output='screen',
-        parameters=[_config('deepsort_tracker_eo.yaml')],
+        parameters=[_config('bytetrack_tracker_eo.yaml')],
         condition=IfCondition(enable_tracker_eo),
     )
-
     track_selector_node = Node(
         package='yolo_detector_pkg',
         executable='track_selector_node',
@@ -142,12 +150,13 @@ def generate_launch_description():
             description='Start stream-aware track selector for driver detection.',
         ),
         video_rx_node,
-        image_preprocess_node,
+        # image_preprocess_node,
         yolo_detector_ir_node,
         yolo_detector_eo_drone_node,
         yolo_detector_eo_person_node,
         detection_merge_eo_node,
         bytetrack_tracker_ir_node,
-        deepsort_tracker_eo_node,
+        # deepsort_tracker_eo_node,
+        bytetrack_tracker_eo_node,
         track_selector_node,
     ])
